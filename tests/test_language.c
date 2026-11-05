@@ -1659,9 +1659,23 @@ TEST(lang_classify_reads_only_its_probe) {
     PASS();
 }
 
+/* Web Forms markup and site maps; Visual Studio spells master pages
+ * "Site.Master", and the code-behind beside each page stays VB.NET. */
+TEST(lang_aspnet_markup_and_sitemap) {
+    ASSERT_EQ(cbm_language_for_filename("Orders.aspx"), CBM_LANG_ASPNET);
+    ASSERT_EQ(cbm_language_for_filename("Header.ascx"), CBM_LANG_ASPNET);
+    ASSERT_EQ(cbm_language_for_filename("Site.Master"), CBM_LANG_ASPNET);
+    ASSERT_EQ(cbm_language_for_filename("Site.master"), CBM_LANG_ASPNET);
+    ASSERT_EQ(cbm_language_for_filename("Web.sitemap"), CBM_LANG_ASPNET);
+    ASSERT_EQ(cbm_language_for_filename("Orders.aspx.vb"), CBM_LANG_VBNET);
+    ASSERT_STR_EQ(cbm_language_name(CBM_LANG_ASPNET), "ASP.NET");
+    PASS();
+}
+
 /* ── Suite ─────────────────────────────────────────────────────── */
 
 SUITE(language) {
+    RUN_TEST(lang_aspnet_markup_and_sitemap);
     /* Extension: Tier 1 programming */
     RUN_TEST(lang_ext_go);
     RUN_TEST(lang_ext_python);

@@ -421,11 +421,19 @@ static const char *vb_call_types[] = {"invocation", "new_expression", NULL};
  * IMPORTS edges from `Imports System.Data` to an unrelated project method named
  * `Data`, and `New DataTable()` calls after them through import_map. VB calls
  * resolve through same_module / unique_name / suffix strategies without it. */
-static const char *vb_branch_types[] = {"if_statement",    "elseif_clause",      "select_case_statement",
-                                        "case_block",      "for_statement",      "for_each_statement",
-                                        "while_statement", "do_statement",       "try_statement",
-                                        "catch_block",     NULL};
-static const char *vb_var_types[] = {"field_declaration", "dim_statement", "const_declaration", NULL};
+static const char *vb_branch_types[] = {"if_statement",
+                                        "elseif_clause",
+                                        "select_case_statement",
+                                        "case_block",
+                                        "for_statement",
+                                        "for_each_statement",
+                                        "while_statement",
+                                        "do_statement",
+                                        "try_statement",
+                                        "catch_block",
+                                        NULL};
+static const char *vb_var_types[] = {"field_declaration", "dim_statement", "const_declaration",
+                                     NULL};
 static const char *vb_assign_types[] = {"assignment_statement", "compound_assignment_statement",
                                         NULL};
 static const char *vb_throw_types[] = {"throw_statement", NULL};
@@ -2790,9 +2798,13 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
     // CBM_LANG_VBNET — Visual Basic .NET. repowise-dev/tree-sitter-vb-dotnet v0.3.0 (MIT).
     // Same environment API as C# (System.Environment), so it shares cs_env_funcs.
     [CBM_LANG_VBNET] = {CBM_LANG_VBNET, vb_func_types, vb_class_types, vb_field_types,
-                        vb_module_types, vb_call_types, empty_types, empty_types,
-                        vb_branch_types, vb_var_types, vb_assign_types, vb_throw_types, NULL,
-                        vb_decorator_types, cs_env_funcs, NULL, tree_sitter_vb_dotnet, NULL},
+                        vb_module_types, vb_call_types, empty_types, empty_types, vb_branch_types,
+                        vb_var_types, vb_assign_types, vb_throw_types, NULL, vb_decorator_types,
+                        cs_env_funcs, NULL, tree_sitter_vb_dotnet, NULL},
+
+    // CBM_LANG_ASPNET — ASP.NET Web Forms markup and site maps. No grammar row,
+    // as DIAGRAM: extraction reads the file itself (cbm_aspnet_extract,
+    // extract_aspnet.c). Zero spec.
 
 };
 

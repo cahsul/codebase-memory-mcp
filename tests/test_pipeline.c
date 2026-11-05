@@ -10625,6 +10625,111 @@ TEST(pipeline_ts_crossfile_new_instance_method_call_issue1354) {
     PASS();
 }
 
+/* True iff a CALLS edge runs from the node with QN `src` to the node with QN
+ * `tgt` and its properties contain `strategy`. */
+static bool qn_call_has_strategy(cbm_store_t *s, const char *project, const char *src,
+                                 const char *tgt, const char *strategy) {
+    cbm_node_t a = {0};
+    cbm_node_t b = {0};
+    bool found = false;
+    if (cbm_store_find_node_by_qn(s, project, src, &a) == CBM_STORE_OK &&
+        cbm_store_find_node_by_qn(s, project, tgt, &b) == CBM_STORE_OK) {
+        cbm_edge_t *edges = NULL;
+        int ec = 0;
+        cbm_store_find_edges_by_source_type(s, a.id, "CALLS", &edges, &ec);
+        for (int i = 0; i < ec && !found; i++) {
+            found = edges[i].target_id == b.id && edges[i].properties_json &&
+                    strstr(edges[i].properties_json, strategy) != NULL;
+        }
+        if (edges) {
+            cbm_store_free_edges(edges, ec);
+        }
+    }
+    cbm_node_free_fields(&a);
+    cbm_node_free_fields(&b);
+    return found;
+}
+
+/* ASP.NET Web Forms end to end: a page calls its code-behind class and the
+ * handler its markup names -- never the same-named handler of another page --
+ * the class calls the methods its Handles clauses wire, and a site map node
+ * calls the page, so an inbound trace from a handler reaches the menu. */
+TEST(pipeline_aspnet_webforms_wiring) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_aspnet_XXXXXX");
+    if (!cbm_mkdtemp(tmp)) {
+        FAIL("tmpdir");
+    }
+    /* The markup spells the handler in another case, as VB allows. */
+    write_temp_file(tmp, "Web/Orders.aspx",
+                    "<%@ Page Language=\"vb\" CodeBehind=\"Orders.aspx.vb\" "
+                    "Inherits=\"Demo.Orders\" %>\n"
+                    "<asp:Button ID=\"btnSave\" runat=\"server\" OnClick=\"btnsave_click\" />\n");
+    write_temp_file(tmp, "Web/Orders.aspx.vb",
+                    "Public Class Orders\n"
+                    "    Inherits System.Web.UI.Page\n"
+                    "    Protected Sub Page_Load(ByVal s As Object, ByVal e As EventArgs) "
+                    "Handles Me.Load\n"
+                    "    End Sub\n"
+                    "    Protected Sub btnSave_Click(ByVal s As Object, ByVal e As EventArgs)\n"
+                    "    End Sub\n"
+                    "End Class\n");
+    write_temp_file(tmp, "Web/Archive.aspx",
+                    "<%@ Page Language=\"vb\" CodeBehind=\"Archive.aspx.vb\" "
+                    "Inherits=\"Demo.Archive\" %>\n"
+                    "<asp:Button ID=\"btnSave\" runat=\"server\" OnClick=\"btnSave_Click\" />\n");
+    write_temp_file(tmp, "Web/Archive.aspx.vb",
+                    "Public Class Archive\n"
+                    "    Inherits System.Web.UI.Page\n"
+                    "    Protected Sub btnSave_Click(ByVal s As Object, ByVal e As EventArgs)\n"
+                    "    End Sub\n"
+                    "End Class\n");
+    write_temp_file(tmp, "Web/Web.sitemap",
+                    "<siteMap>\n"
+                    "  <siteMapNode url=\"#root\" title=\"Home\">\n"
+                    "    <siteMapNode url=\"Orders.aspx\" title=\"Orders\" />\n"
+                    "  </siteMapNode>\n"
+                    "</siteMap>\n");
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/aspnet.db", tmp);
+    cbm_pipeline_t *p = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(cbm_pipeline_run(p), 0);
+    const char *project = cbm_pipeline_project_name(p);
+    cbm_store_t *s = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(s);
+
+    char page[512];
+    char cls[512];
+    char save[512];
+    char load[512];
+    char other_save[512];
+    char menu[512];
+    snprintf(page, sizeof(page), "%s.Web.Orders.Orders_aspx", project);
+    snprintf(cls, sizeof(cls), "%s.Web.Orders.aspx.Orders", project);
+    snprintf(save, sizeof(save), "%s.btnSave_Click", cls);
+    snprintf(load, sizeof(load), "%s.Page_Load", cls);
+    snprintf(other_save, sizeof(other_save), "%s.Web.Archive.aspx.Archive.btnSave_Click", project);
+    snprintf(menu, sizeof(menu), "%s.Web.Web.menu_L3_Orders", project);
+    bool page_cls = qn_call_has_strategy(s, project, page, cls, "exact_qn");
+    bool page_save = qn_call_has_strategy(s, project, page, save, "exact_qn_ci");
+    bool page_other = qn_call_has_strategy(s, project, page, other_save, "");
+    bool cls_load = qn_call_has_strategy(s, project, cls, load, "exact_qn");
+    bool menu_page = qn_call_has_strategy(s, project, menu, page, "exact_qn");
+
+    cbm_store_close(s);
+    cbm_pipeline_free(p);
+    th_rmtree(tmp);
+
+    ASSERT_TRUE(page_cls);
+    ASSERT_TRUE(page_save);
+    ASSERT_FALSE(page_other);
+    ASSERT_TRUE(cls_load);
+    ASSERT_TRUE(menu_page);
+    PASS();
+}
+
 /* Issue #2297: a call through `import { foo as fooShared }` produced no CALLS
  * edge, so trace_path(foo, inbound) missed the caller. End to end through the
  * real pipeline: the renamed call, an app-local wrapper that shares the
@@ -31970,6 +32075,7 @@ SUITE(pipeline) {
     RUN_TEST(pipeline_tsjs_receiver_suppresses_weak_method_edge);
     RUN_TEST(pipeline_axios_wrapper_baseurl_composes_http_calls_issue1916);
     RUN_TEST(pipeline_ts_crossfile_new_instance_method_call_issue1354);
+    RUN_TEST(pipeline_aspnet_webforms_wiring);
     RUN_TEST(pipeline_ts_renamed_import_call_issue2297);
     RUN_TEST(pipeline_ts_param_property_injection_issue514);
     RUN_TEST(pipeline_python_receiver_suppresses_weak_method_edge);

@@ -222,6 +222,11 @@ static const LanguageCapabilityEntry LANGUAGE_CAPABILITIES[CBM_LANG_COUNT] = {
     DOCUMENT(ASCIIDOC),
     NO_CALL(OPENAPI), /* the JSON grammar; its operations are Routes, no calls */
     DOCUMENT(DIAGRAM),
+    /* Grammar-free like the documents, but not call-free: its calls come from
+     * page directives, event attributes and site map urls, not call nodes. */
+    [CBM_LANG_ASPNET] = {CAP_DOCUMENT, "ASPNET",
+                         "markup and site maps read without a grammar (extract_aspnet.c); "
+                         "wiring calls from directives, event attributes and urls"},
 };
 
 #undef CALL_WITH_REFERENCE_VOCAB
@@ -315,7 +320,7 @@ TEST(repro_language_capability_ledger_covers_every_enum) {
     if (counts[CAP_CALL_WITH_REFERENCE_VOCAB] != 89 ||
         counts[CAP_CALL_WITHOUT_REFERENCE_VOCAB] != 27 || counts[CAP_NO_CALL] != 50 ||
         counts[CAP_TRANSFORM_ONLY] != 1 || counts[CAP_UNSUPPORTED] != 1 ||
-        counts[CAP_DOCUMENT] != 3) {
+        counts[CAP_DOCUMENT] != 4) {
         fprintf(stderr,
                 "  [language-registry] invariant=capability_partition call_ref_vocab=%d ref_gap=%d "
                 "no_call=%d transform_only=%d unsupported=%d document=%d\n",
@@ -335,7 +340,7 @@ TEST(repro_call_argument_matrices_equal_call_capability_ledger) {
         EXPECTED_MATRIX_B_ROWS = 49,
         EXPECTED_CALL_CAPABLE_LANGUAGES = 116,
         EXPECTED_NON_CALL_LANGUAGES =
-            55, /* 50 no-call + transform-only + unsupported + PDF, AsciiDoc, Diagram */
+            56, /* 50 no-call + transform-only + unsupported + PDF, AsciiDoc, Diagram, ASP.NET */
         EXPECTED_NON_CALL_DOMAIN_CONTROLS = 2,
     };
     CBMLanguage matrix_a_ids[CBM_LANG_COUNT];

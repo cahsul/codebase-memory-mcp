@@ -1489,6 +1489,31 @@ static void handle_vb_sql_strings(CBMExtractCtx *ctx, TSNode node, const WalkSta
     }
 }
 
+/* VB.NET: `Sub btnSave_Click(...) Handles btnSave.Click, Me.Load` is wired by
+ * its class (WithEvents), so no statement calls it and an inbound trace from
+ * the handler stopped there. The handles clause becomes a call from the
+ * enclosing class to the method itself, named by exact QN ("qn:<method qn>",
+ * resolved in registry.c), so the trace continues to the class and from there
+ * to the page that inherits it. One call per clause however many events it
+ * lists: the edge carries no event name. */
+static void handle_vb_handles(CBMExtractCtx *ctx, TSNode node, const WalkState *state) {
+    if (ctx->language != CBM_LANG_VBNET || !state->enclosing_class_qn ||
+        !state->enclosing_func_qn || state->enclosing_func_qn == ctx->module_qn ||
+        strcmp(ts_node_type(node), "handles_clause") != 0) {
+        return;
+    }
+    CBMCall call = {0};
+    call.callee_name =
+        cbm_arena_sprintf(ctx->arena, "%s%s", CBM_QN_CALLEE_PREFIX, state->enclosing_func_qn);
+    call.enclosing_func_qn = state->enclosing_class_qn;
+    call.start_line = (int)ts_node_start_point(node).row + TS_LINE_OFFSET;
+    call.site_start_byte = ts_node_start_byte(node);
+    call.site_end_byte = ts_node_end_byte(node);
+    if (call.callee_name) {
+        cbm_calls_push(&ctx->result->calls, ctx->arena, call);
+    }
+}
+
 // --- URL-builder helpers (issue #1009) ---
 
 /* Map-aware template flatten for builder bodies: a ${...} substitution that is
@@ -2961,6 +2986,7 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
             handle_type_assigns(ctx, node, spec, &state);
             handle_string_refs(ctx, node, &state);
             handle_vb_sql_strings(ctx, node, &state);
+            handle_vb_handles(ctx, node, &state);
             handle_yaml_nested(ctx, node);
             scan_infra_bindings(ctx, node);
 

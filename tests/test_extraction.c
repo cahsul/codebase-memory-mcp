@@ -1263,26 +1263,27 @@ static int has_rw_named(CBMFileResult *r, const char *name) {
  * string naming a SQL object becomes a "sql:" callee, and `Imports` (an
  * external namespace) yields no import. */
 TEST(vbnet_code_behind_defs_and_calls) {
-    CBMFileResult *r = extract("Imports System.Data\r\n"
-                               "Partial Class OrderPage\r\n"
-                               "    Inherits System.Web.UI.Page\r\n"
-                               "    Private counter As Integer, label As String\r\n"
-                               "    Public Sub New()\r\n"
-                               "    End Sub\r\n"
-                               "    Protected Sub Page_Load(ByVal s As Object, ByVal e As EventArgs) "
-                               "Handles Me.Load\r\n"
-                               "        LoadGrid(\"A\")\r\n"
-                               "        helper.Compute(1)\r\n"
-                               "        Dim items As Object = New List(Of String)()\r\n"
-                               "        Dim cmd As New SqlCommand(\"stp_order_list\", conn)\r\n"
-                               "    End Sub\r\n"
-                               "    Private Sub LoadGrid(ByVal code As String)\r\n"
-                               "        With grid\r\n"
-                               "            .Refresh()\r\n"
-                               "        End With\r\n"
-                               "    End Sub\r\n"
-                               "End Class\r\n",
-                               CBM_LANG_VBNET, "t", "OrderPage.aspx.vb");
+    CBMFileResult *r =
+        extract("Imports System.Data\r\n"
+                "Partial Class OrderPage\r\n"
+                "    Inherits System.Web.UI.Page\r\n"
+                "    Private counter As Integer, label As String\r\n"
+                "    Public Sub New()\r\n"
+                "    End Sub\r\n"
+                "    Protected Sub Page_Load(ByVal s As Object, ByVal e As EventArgs) "
+                "Handles Me.Load\r\n"
+                "        LoadGrid(\"A\")\r\n"
+                "        helper.Compute(1)\r\n"
+                "        Dim items As Object = New List(Of String)()\r\n"
+                "        Dim cmd As New SqlCommand(\"stp_order_list\", conn)\r\n"
+                "    End Sub\r\n"
+                "    Private Sub LoadGrid(ByVal code As String)\r\n"
+                "        With grid\r\n"
+                "            .Refresh()\r\n"
+                "        End With\r\n"
+                "    End Sub\r\n"
+                "End Class\r\n",
+                CBM_LANG_VBNET, "t", "OrderPage.aspx.vb");
     ASSERT_NOT_NULL(r);
     ASSERT_FALSE(r->has_error);
     ASSERT(has_def(r, "Class", "OrderPage"));
@@ -1364,6 +1365,104 @@ TEST(tsql_detection_needs_a_tsql_marker) {
     const char *tsql = "CREATE TABLE [dbo].[orders] ([id] bigint NOT NULL)\nGO\n";
     ASSERT_FALSE(cbm_tsql_looks_like(ansi, (int)strlen(ansi)));
     ASSERT(cbm_tsql_looks_like(tsql, (int)strlen(tsql)));
+    PASS();
+}
+
+/* --- ASP.NET Web Forms wiring (VB Handles, extract_aspnet.c) --- */
+
+/* `Handles a.Click, b.Click` wires the method from its class: one call from
+ * the class to the method's exact QN, whatever the number of events. */
+TEST(vbnet_handles_clause_calls_from_class) {
+    CBMFileResult *r = extract("Partial Class OrderPage\r\n"
+                               "    Protected Sub btnSave_Click(ByVal s As Object, ByVal e As "
+                               "EventArgs) Handles btnSave.Click, btnSave2.Click\r\n"
+                               "    End Sub\r\n"
+                               "    Private Sub Helper()\r\n"
+                               "    End Sub\r\n"
+                               "End Class\r\n",
+                               CBM_LANG_VBNET, "t", "Shop/OrderPage.aspx.vb");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT_EQ(count_calls_from(r, "qn:t.Shop.OrderPage.aspx.OrderPage.btnSave_Click",
+                               "t.Shop.OrderPage.aspx.OrderPage"),
+              1);
+    ASSERT_FALSE(has_call(r, "qn:t.Shop.OrderPage.aspx.OrderPage.Helper"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A page is a Class named like the class ASP.NET generates; it calls its
+ * code-behind class (CodeBehind path + Inherits) and the handlers its server
+ * controls name, by exact QN. Client script, comments, OnClientClick and a
+ * MasterType directive are not wiring. */
+TEST(aspnet_page_wires_code_behind) {
+    const char *page = "t.Shop.Orders.Orders_aspx";
+    CBMFileResult *r =
+        extract("<%@ MasterType VirtualPath=\"~/Site.Master\" %>\r\n"
+                "<%@ Page Language=\"vb\" AutoEventWireup=\"false\" CodeBehind=\"Orders.aspx.vb\" "
+                "Inherits=\"Demo.Orders\" %>\r\n"
+                "<script type=\"text/javascript\">\r\n"
+                "  // it's a < b comment\r\n"
+                "  var s = '<asp:Button OnClick=\"ghost_Click\" />';\r\n"
+                "</script>\r\n"
+                "<asp:Button ID=\"btnSave\" runat=\"server\" Text='<%# Eval(\"Name\") %>' "
+                "OnClick=\"btnSave_Click\" OnClientClick=\"return confirm('ok?');\" />\r\n"
+                "<input type=\"button\" runat=\"server\" onserverclick=\"btnGo_ServerClick\" />\r\n"
+                "<input type=\"button\" onclick=\"plainHtml\" />\r\n"
+                "<!-- <asp:Button runat=\"server\" OnClick=\"btnOld_Click\" /> -->\r\n"
+                "<%-- <asp:Button runat=\"server\" OnClick=\"btnOld2_Click\" /> --%>\r\n",
+                CBM_LANG_ASPNET, "t", "Shop/Orders.aspx");
+    ASSERT_NOT_NULL(r);
+    ASSERT(has_def(r, "Class", "Orders_aspx"));
+    ASSERT_EQ(count_calls_from(r, "qn:t.Shop.Orders.aspx.Orders", page), 1);
+    ASSERT_EQ(count_calls_from(r, "qn:t.Shop.Orders.aspx.Orders.btnSave_Click", page), 1);
+    ASSERT_EQ(count_calls_from(r, "qn:t.Shop.Orders.aspx.Orders.btnGo_ServerClick", page), 1);
+    ASSERT_FALSE(has_call(r, "ghost_Click"));
+    ASSERT_FALSE(has_call(r, "confirm"));
+    ASSERT_FALSE(has_call(r, "plainHtml")); /* not a server control */
+    ASSERT_FALSE(has_call(r, "btnOld_Click"));
+    ASSERT_FALSE(has_call(r, "btnOld2_Click"));
+    ASSERT_FALSE(has_call(r, "Site"));
+    cbm_free_result(r);
+
+    /* A master page: the Master directive, its own generated name. */
+    r = extract("<%@ Master Language=\"VB\" CodeBehind=\"Site.Master.vb\" "
+                "Inherits=\"Demo.SiteMaster\" %>\r\n",
+                CBM_LANG_ASPNET, "t", "Site.Master");
+    ASSERT_NOT_NULL(r);
+    ASSERT(has_def(r, "Class", "Site_Master"));
+    ASSERT_EQ(count_calls_from(r, "qn:t.Site.Master.SiteMaster", "t.Site.Site_Master"), 1);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Every site map node is a Section named by its title path; a node whose url
+ * names a page calls that page (urls are relative to the site map's folder).
+ * Group anchors, external links and commented-out nodes call nothing. */
+TEST(aspnet_sitemap_sections_and_page_links) {
+    CBMFileResult *r =
+        extract("<siteMap>\r\n"
+                "  <siteMapNode url=\"#root\" title=\"Home\">\r\n"
+                "    <siteMapNode url=\"#shop\" title=\"Shop\">\r\n"
+                "      <siteMapNode url=\"Shop/Orders.aspx?mode=1\" title=\"Orders\" />\r\n"
+                "      <!-- <siteMapNode url=\"Archive.aspx\" title=\"Old archive\" /> -->\r\n"
+                "    </siteMapNode>\r\n"
+                "    <siteMapNode url=\"~/Archive.aspx\" title=\"Archive\" />\r\n"
+                "    <siteMapNode url=\"http://example.com/x.aspx\" title=\"External\" />\r\n"
+                "  </siteMapNode>\r\n"
+                "</siteMap>\r\n",
+                CBM_LANG_ASPNET, "t", "Web/Web.sitemap");
+    ASSERT_NOT_NULL(r);
+    ASSERT(has_def(r, "Section", "Home"));
+    ASSERT(has_def(r, "Section", "Home > Shop > Orders"));
+    ASSERT(has_def(r, "Section", "Home > Archive")); /* back at depth 1 after </siteMapNode> */
+    ASSERT_FALSE(has_def_any(r, "Home > Shop > Old archive"));
+    ASSERT_EQ(count_calls_from(r, "qn:t.Web.Shop.Orders.Orders_aspx", "t.Web.Web.menu_L4_Orders"),
+              1);
+    ASSERT_EQ(count_calls_from(r, "qn:t.Web.Archive.Archive_aspx", "t.Web.Web.menu_L7_Archive"), 1);
+    ASSERT_FALSE(has_call(r, "example"));
+    ASSERT_EQ(r->calls.count, 2);
+    cbm_free_result(r);
     PASS();
 }
 
@@ -15501,6 +15600,9 @@ SUITE(extraction) {
     RUN_TEST(tsql_procedure_reads_writes_calls);
     RUN_TEST(tsql_table_and_view_scripts);
     RUN_TEST(tsql_detection_needs_a_tsql_marker);
+    RUN_TEST(vbnet_handles_clause_calls_from_class);
+    RUN_TEST(aspnet_page_wires_code_behind);
+    RUN_TEST(aspnet_sitemap_sections_and_page_links);
     RUN_TEST(csharp_constructor_of_escaped_type_named_extension);
     RUN_TEST(csharp_extension_block_conditional_members);
     RUN_TEST(swift_class);

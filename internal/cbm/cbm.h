@@ -216,6 +216,8 @@ typedef enum {
     CBM_LANG_DIAGRAM,  // diagram files (PlantUML, DOT, D2, draw.io, Excalidraw), read
                        // without a grammar (diagram.c)
     CBM_LANG_VBNET,    // Visual Basic .NET (.vb): tree-sitter-vb-dotnet, repowise fork v0.3.0
+    CBM_LANG_ASPNET,   // ASP.NET Web Forms markup (.aspx/.ascx/.master) and site maps
+                       // (.sitemap), read without a grammar (extract_aspnet.c)
     CBM_LANG_COUNT
 } CBMLanguage;
 
@@ -1413,6 +1415,14 @@ void cbm_extract_diagram_file(CBMExtractCtx *ctx);
  * EXEC becomes calls, table reads/writes become rw records. */
 bool cbm_tsql_looks_like(const char *source, int source_len);
 void cbm_tsql_extract(CBMExtractCtx *ctx);
+/* ASP.NET Web Forms markup and site maps (CBM_LANG_ASPNET, extract_aspnet.c):
+ * a page becomes a Class wired to its code-behind class and event handlers, a
+ * site map node becomes a Section wired to the page its url names. */
+void cbm_aspnet_extract(CBMExtractCtx *ctx);
+/* Callee prefix for a target named by its exact qualified name, minted at
+ * extraction ("qn:<qn>": VB Handles clauses, ASP.NET wiring). Resolved only
+ * against that QN, case-insensitively on a miss (registry.c). */
+#define CBM_QN_CALLEE_PREFIX "qn:"
 
 /* OpenAPI / Swagger documents (openapi.c): a Route definition per operation and
  * a doc link per operationId. Self-gated: openapi.json / swagger.json, and YAML

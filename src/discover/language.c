@@ -70,6 +70,16 @@ static const ext_entry_t EXT_TABLE[] = {
      * are different languages and deliberately not mapped. */
     {".vb", CBM_LANG_VBNET},
 
+    /* ASP.NET Web Forms: page, user control and master page markup, and the
+     * XML site map that menus are drawn from. Read from the text by
+     * extract_aspnet.c (directives, server-control event attributes,
+     * siteMapNode urls); the code itself lives in the code-behind file. */
+    {".aspx", CBM_LANG_ASPNET},
+    {".ascx", CBM_LANG_ASPNET},
+    {".master", CBM_LANG_ASPNET},
+    {".Master", CBM_LANG_ASPNET}, /* Visual Studio names master pages Site.Master */
+    {".sitemap", CBM_LANG_ASPNET},
+
     /* Clojure */
     {".clj", CBM_LANG_CLOJURE},
     {".cljc", CBM_LANG_CLOJURE},
@@ -955,6 +965,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
     [CBM_LANG_VBNET] = "VB.NET",
+    [CBM_LANG_ASPNET] = "ASP.NET",
 
 };
 

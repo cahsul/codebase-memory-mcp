@@ -2607,6 +2607,49 @@ TEST(fqn_symbol_prefix_len_matches_fqn_compute) {
     PASS();
 }
 
+/* A "qn:" callee names its target exactly: a VB Handles clause its own method,
+ * an ASP.NET page its code-behind handler, a site map node its page. The
+ * same-named handler of another page never answers, case differences (Windows
+ * paths, VB names) still bind, and a QN that names nothing gives no edge
+ * instead of a name guess. */
+TEST(registry_exact_qn_callee_vb_aspnet) {
+    cbm_registry_t *r = cbm_registry_new();
+    cbm_registry_add_lang(r, "btnSave_Click", "p.Web.Orders.aspx.Orders.btnSave_Click", "Method",
+                          CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "btnSave_Click", "p.Web.Archive.aspx.Archive.btnSave_Click", "Method",
+                          CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "Orders_aspx", "p.Web.Orders.Orders_aspx", "Class", CBM_LANG_ASPNET);
+    const char *page = "p.Web.Orders";
+
+    cbm_resolution_t res = cbm_registry_resolve_call_lang(
+        r, "qn:p.Web.Orders.aspx.Orders.btnSave_Click", page, NULL, NULL, 0, CBM_LANG_ASPNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.Web.Orders.aspx.Orders.btnSave_Click");
+    ASSERT_STR_EQ(res.strategy, "exact_qn");
+    /* CodeBehind="orders.aspx.vb", OnClick="btnsave_click". */
+    res = cbm_registry_resolve_call_lang(r, "qn:p.Web.orders.aspx.Orders.btnsave_click", page, NULL,
+                                         NULL, 0, CBM_LANG_ASPNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.Web.Orders.aspx.Orders.btnSave_Click");
+    ASSERT_STR_EQ(res.strategy, "exact_qn_ci");
+    /* A site map url in another case: the page name itself differs in case. */
+    res = cbm_registry_resolve_call_lang(r, "qn:p.web.orders.orders_aspx", "p.Web.Web", NULL, NULL,
+                                         0, CBM_LANG_ASPNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.Web.Orders.Orders_aspx");
+    /* A menu url to a deleted page: no edge, not the namesake handler. */
+    res = cbm_registry_resolve_call_lang(r, "qn:p.Web.Missing.aspx.Missing.btnSave_Click", page,
+                                         NULL, NULL, 0, CBM_LANG_ASPNET);
+    ASSERT_NULL(res.qualified_name);
+    /* VB Handles: same prefix from the code-behind itself. */
+    res = cbm_registry_resolve_call_lang(r, "qn:p.Web.Archive.aspx.Archive.btnSave_Click",
+                                         "p.Web.Archive.aspx", NULL, NULL, 0, CBM_LANG_VBNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.Web.Archive.aspx.Archive.btnSave_Click");
+    /* Other languages never read the prefix. */
+    res = cbm_registry_resolve_call_lang(r, "qn:p.Web.Orders.aspx.Orders.btnSave_Click", page, NULL,
+                                         NULL, 0, CBM_LANG_PYTHON);
+    ASSERT_TRUE(!res.strategy || strcmp(res.strategy, "exact_qn") != 0);
+    cbm_registry_free(r);
+    PASS();
+}
+
 SUITE(registry) {
     RUN_TEST(python_symbol_scope_len_preserves_file_identity);
     RUN_TEST(registry_python_package_scope_is_explicit);
@@ -2729,4 +2772,5 @@ SUITE(registry) {
     RUN_TEST(registry_resolve_lexical_walks_enclosing_defs_issue1548);
     RUN_TEST(registry_python_local_bound_at_own_file_issue1548);
     RUN_TEST(fqn_symbol_prefix_len_matches_fqn_compute);
+    RUN_TEST(registry_exact_qn_callee_vb_aspnet);
 }

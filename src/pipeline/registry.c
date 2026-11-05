@@ -69,6 +69,10 @@ const char *cbm_confidence_band(double score) {
 #define CONF_UNIQUE_NAME 0.75
 /* Strategy 4: suffix_match — multiple candidates, filtered */
 #define CONF_SUFFIX_MATCH 0.55
+/* "qn:" callee: the extractor named the target's exact QN (VB Handles,
+ * ASP.NET wiring); a case-insensitive hit on that QN scores a little lower. */
+#define CONF_EXACT_QN 0.95
+#define CONF_EXACT_QN_CI 0.90
 /* Fuzzy fallback: lower confidence */
 #define CONF_FUZZY_SINGLE 0.40
 #define CONF_FUZZY_MULTI 0.30
@@ -1177,7 +1181,8 @@ static int xl_family(CBMLanguage lang) {
         return XL_FAM_JVM;
     case CBM_LANG_CSHARP:
     case CBM_LANG_FSHARP:
-    case CBM_LANG_VBNET: /* a VB web project calls C# class libraries by name */
+    case CBM_LANG_VBNET:  /* a VB web project calls C# class libraries by name */
+    case CBM_LANG_ASPNET: /* page markup wires its VB or C# code-behind */
         return XL_FAM_DOTNET;
     case CBM_LANG_PHP:
     case CBM_LANG_BLADE:
@@ -1495,8 +1500,7 @@ static bool vb_label_is_type(const char *label) {
 
 /* Remember the declared casing of a definition's simple name in `ci` (vb_ci or
  * sql_ci) and, when `types` is given, whether the name is a type (vb_types). */
-static void ci_record(CBMHashTable *ci, CBMHashTable *types, const char *name,
-                      const char *label) {
+static void ci_record(CBMHashTable *ci, CBMHashTable *types, const char *name, const char *label) {
     if (!ci || !name || !name[0]) {
         return;
     }
@@ -1862,6 +1866,10 @@ void cbm_registry_add_lang_in_module(cbm_registry_t *r, const char *name,
     index_under_name(r, primary, owned_qn, lang);
     if (lang == CBM_LANG_VBNET) {
         ci_record(r->vb_ci, r->vb_types, primary, label);
+    } else if (lang == CBM_LANG_ASPNET) {
+        /* Page names ("Orders_aspx"): a site map url may spell the file in
+         * another case, which Windows serves all the same. */
+        ci_record(r->vb_ci, NULL, primary, label);
     } else if (lang == CBM_LANG_SQL) {
         ci_record(r->sql_ci, NULL, primary, label);
     }
@@ -2634,13 +2642,59 @@ cbm_resolution_t cbm_registry_resolve_lang(const cbm_registry_t *r, const char *
                                            const char **import_map_vals, int import_map_count,
                                            CBMLanguage lang) {
     char vb_buf[CBM_VB_CALLEE_MAX];
-    if (lang == CBM_LANG_VBNET) {
+    if (lang == CBM_LANG_VBNET || lang == CBM_LANG_ASPNET) {
         callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
     } else if (lang == CBM_LANG_SQL) {
         callee_name = sql_canonical_name(r, callee_name, vb_buf, sizeof(vb_buf));
     }
     return registry_resolve_scoped(r, callee_name, module_qn, import_map_keys, import_map_vals,
                                    import_map_count, lang_scope_len(module_qn, lang), false);
+}
+
+/* A "qn:<qn>" callee (CBM_QN_CALLEE_PREFIX) names its target exactly, because
+ * the extractor knows it: a VB `Handles btnSave.Click` clause names its own
+ * method, an ASP.NET page names its code-behind class from the CodeBehind
+ * path, a site map node names the page its url points at. Windows file names
+ * and VB identifiers ignore case, so a miss (`CodeBehind="Site.master.vb"`
+ * beside `Site.Master.vb`) retries within the by-name bucket of the last
+ * segment, comparing whole QNs case-insensitively. Nothing is guessed beyond
+ * that: a QN that names no definition (a menu url to a deleted page) gives no
+ * edge. */
+static cbm_resolution_t resolve_exact_qn(const cbm_registry_t *r, const char *qn) {
+    const char *key = cbm_ht_get_key(r->exact, qn);
+    if (key) {
+        return (cbm_resolution_t){key, "exact_qn", CONF_EXACT_QN, SKIP_ONE};
+    }
+    const char *simple = simple_name(qn);
+    const qn_array_t *arr = cbm_ht_get(r->by_name, simple);
+    if (!arr && r->vb_ci) {
+        char lower[CBM_VB_SEGMENT_MAX];
+        size_t n = strlen(simple);
+        if (n == 0 || n >= sizeof(lower)) {
+            return empty_result();
+        }
+        for (size_t i = 0; i < n; i++) {
+            lower[i] = (char)tolower((unsigned char)simple[i]);
+        }
+        lower[n] = '\0';
+        const char *canon = cbm_ht_get(r->vb_ci, lower);
+        arr = canon ? cbm_ht_get(r->by_name, canon) : NULL;
+    }
+    size_t qlen = strlen(qn);
+    for (int i = 0; arr && i < arr->count; i++) {
+        const char *cand = arr->items[i];
+        if (!cand || strlen(cand) != qlen) {
+            continue;
+        }
+        size_t j = 0;
+        while (j < qlen && tolower((unsigned char)cand[j]) == tolower((unsigned char)qn[j])) {
+            j++;
+        }
+        if (j == qlen) {
+            return (cbm_resolution_t){cand, "exact_qn_ci", CONF_EXACT_QN_CI, SKIP_ONE};
+        }
+    }
+    return empty_result();
 }
 
 /* A VB "sql:<name>" callee: a string literal that names a SQL routine
@@ -2696,7 +2750,12 @@ cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const c
         strncmp(callee_name, CBM_VB_SQL_PREFIX, strlen(CBM_VB_SQL_PREFIX)) == 0) {
         return vb_resolve_sql_routine(r, callee_name + strlen(CBM_VB_SQL_PREFIX));
     }
-    if (lang == CBM_LANG_VBNET) {
+    /* VB Handles clauses and ASP.NET wiring name their target by exact QN. */
+    if ((lang == CBM_LANG_VBNET || lang == CBM_LANG_ASPNET) && callee_name &&
+        strncmp(callee_name, CBM_QN_CALLEE_PREFIX, strlen(CBM_QN_CALLEE_PREFIX)) == 0) {
+        return resolve_exact_qn(r, callee_name + strlen(CBM_QN_CALLEE_PREFIX));
+    }
+    if (lang == CBM_LANG_VBNET || lang == CBM_LANG_ASPNET) {
         callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
     } else if (lang == CBM_LANG_SQL) {
         callee_name = sql_canonical_name(r, callee_name, vb_buf, sizeof(vb_buf));

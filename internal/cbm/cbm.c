@@ -3732,6 +3732,25 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
         cbm_index_mark_done(rel_path);
         return result;
     }
+    /* ASP.NET Web Forms markup and site maps have no grammar: directives, event
+     * attributes and siteMapNode urls are read from the text (extract_aspnet.c). */
+    if (language == CBM_LANG_ASPNET) {
+        result->module_qn = cbm_fqn_module_source_lang(a, project, rel_path, language);
+        CBMExtractCtx aspnet_ctx = {
+            .arena = a,
+            .scratch = scratch,
+            .result = result,
+            .source = source,
+            .source_len = source_len,
+            .language = language,
+            .project = project,
+            .rel_path = rel_path,
+            .module_qn = result->module_qn,
+        };
+        cbm_aspnet_extract(&aspnet_ctx);
+        cbm_index_mark_done(rel_path);
+        return result;
+    }
     /* SQL Server object scripts (CREATE OR ALTER PROCEDURE [dbo].[x] ... GO) are
      * read from the text (extract_tsql.c): the vendored SQL grammar leaves most
      * of them parse_partial with no procedure definitions. Other SQL dialects
