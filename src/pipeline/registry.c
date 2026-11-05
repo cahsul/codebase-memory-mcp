@@ -107,7 +107,24 @@ struct cbm_registry {
 
     /* byName: simpleName → qn_array_t* (heap-owned) */
     CBMHashTable *by_name;
+
+    /* VB.NET identifiers are case-insensitive, by_name is not: a call written
+     * `IsNull(x)` must still reach `Function isNULL(...)`. Maps the lowercase
+     * simple name of every VB definition to the casing it was declared with
+     * (key and value heap-owned). When one name is declared with two casings,
+     * the byte-wise smallest wins, so the choice does not depend on the order
+     * files were indexed in. */
+    CBMHashTable *vb_ci;
+    /* Lowercase names of VB types (Class/Interface/Enum...): the receivers whose
+     * members vb_canonical_callee may rewrite. A local such as `dr` or `conn` is
+     * no type, so `dr.IsNull(...)` (System.Data) never turns into a call of a
+     * project `isNULL`. Keys heap-owned, values unused. */
+    CBMHashTable *vb_types;
 };
+
+/* Longest VB callee text vb_canonical_callee rewrites; longer text is resolved
+ * as written. */
+enum { CBM_VB_CALLEE_MAX = 512, CBM_VB_SEGMENT_MAX = 256 };
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
@@ -1443,7 +1460,131 @@ cbm_registry_t *cbm_registry_new(void) {
     }
     r->exact = cbm_ht_create(CBM_SZ_1K);
     r->by_name = cbm_ht_create(CBM_SZ_512);
+    r->vb_ci = cbm_ht_create(CBM_SZ_512);
+    r->vb_types = cbm_ht_create(CBM_SZ_512);
     return r;
+}
+
+static void free_vb_ci(const char *key, void *value, void *ud) {
+    (void)ud;
+    free(value);
+    free((void *)key);
+}
+
+static void free_vb_type_key(const char *key, void *value, void *ud) {
+    (void)ud;
+    (void)value;
+    free((void *)key);
+}
+
+static bool vb_label_is_type(const char *label) {
+    return label && (strcmp(label, "Class") == 0 || strcmp(label, "Interface") == 0 ||
+                     strcmp(label, "Enum") == 0 || strcmp(label, "Struct") == 0 ||
+                     strcmp(label, "Module") == 0 || strcmp(label, "Type") == 0);
+}
+
+/* Remember the declared casing of a VB definition's simple name (see vb_ci),
+ * and whether the name is a type (see vb_types). */
+static void vb_ci_record(cbm_registry_t *r, const char *name, const char *label) {
+    if (!r->vb_ci || !name || !name[0]) {
+        return;
+    }
+    size_t n = strlen(name);
+    if (n >= CBM_VB_SEGMENT_MAX) {
+        return;
+    }
+    char lower[CBM_VB_SEGMENT_MAX];
+    for (size_t i = 0; i < n; i++) {
+        lower[i] = (char)tolower((unsigned char)name[i]);
+    }
+    lower[n] = '\0';
+    if (r->vb_types && vb_label_is_type(label) && !cbm_ht_has(r->vb_types, lower)) {
+        char *tkey = strdup(lower);
+        if (tkey) {
+            cbm_ht_set(r->vb_types, tkey, (void *)tkey);
+        }
+    }
+    char *have = cbm_ht_get(r->vb_ci, lower);
+    if (!have) {
+        char *key = strdup(lower);
+        char *val = strdup(name);
+        if (!key || !val) {
+            free(key);
+            free(val);
+            return;
+        }
+        cbm_ht_set(r->vb_ci, key, val);
+        return;
+    }
+    if (strcmp(name, have) < 0) {
+        char *val = strdup(name);
+        if (val) {
+            /* Same key: the table keeps its owned key and returns the old value. */
+            free(cbm_ht_set(r->vb_ci, cbm_ht_get_key(r->vb_ci, lower), val));
+        }
+    }
+}
+
+/* VB.NET callee text in declared casing. A segment that has no exact by-name
+ * bucket but matches a VB definition case-insensitively is rewritten to the
+ * declared casing, every other byte kept, under one condition: everything left
+ * of it must be a known receiver, i.e. `Me` / `MyBase` / `MyClass` or a VB type
+ * name (vb_types). A bare call (`GetProductName(x)`) has no receiver and is
+ * always eligible. A member call on anything else, typically a local whose type
+ * the registry cannot know (`conn.Close()`, `dr.IsNull("A")`), is left as
+ * written, so a framework method never lands on a same-named project method.
+ * Returns `callee` itself when nothing changed or the text does not fit `buf`.
+ * Example: `commons.GetProductName` with `Function getProductName` declared in
+ * class `commons` resolves as `commons.getProductName`. */
+static const char *vb_canonical_callee(const cbm_registry_t *r, const char *callee, char *buf,
+                                       size_t cap) {
+    if (!r || !r->vb_ci || !callee || cbm_ht_count(r->vb_ci) == 0) {
+        return callee;
+    }
+    size_t len = strlen(callee);
+    if (len == 0 || len >= cap) {
+        return callee;
+    }
+    bool changed = false;
+    bool receiver_known = true; /* nothing to the left of the first segment */
+    size_t out = 0;
+    const char *seg = callee;
+    for (;;) {
+        const char *end = strchr(seg, '.');
+        size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        const char *repl = NULL;
+        bool seg_is_type = false;
+        if (n > 0 && n < CBM_VB_SEGMENT_MAX) {
+            char exact[CBM_VB_SEGMENT_MAX];
+            char lower[CBM_VB_SEGMENT_MAX];
+            memcpy(exact, seg, n);
+            exact[n] = '\0';
+            for (size_t i = 0; i < n; i++) {
+                lower[i] = (char)tolower((unsigned char)seg[i]);
+            }
+            lower[n] = '\0';
+            seg_is_type = strcmp(lower, "me") == 0 || strcmp(lower, "mybase") == 0 ||
+                          strcmp(lower, "myclass") == 0 ||
+                          (r->vb_types && cbm_ht_has(r->vb_types, lower));
+            if (receiver_known && !cbm_ht_has(r->by_name, exact)) {
+                const char *canon = cbm_ht_get(r->vb_ci, lower);
+                if (canon && strlen(canon) == n && strcmp(canon, exact) != 0) {
+                    repl = canon;
+                }
+            }
+        }
+        memcpy(buf + out, repl ? repl : seg, n);
+        out += n;
+        changed = changed || repl != NULL;
+        if (!end) {
+            break;
+        }
+        receiver_known = receiver_known && seg_is_type;
+        buf[out++] = '.';
+        seg = end + SKIP_ONE;
+    }
+    buf[out] = '\0';
+    return changed ? buf : callee;
 }
 
 static void free_label(const char *key, void *value, void *ud) {
@@ -1472,6 +1613,14 @@ void cbm_registry_free(cbm_registry_t *r) {
     /* by_name first: its items borrow exact's keys. */
     cbm_ht_foreach(r->by_name, free_qn_array, NULL);
     cbm_ht_free(r->by_name);
+    if (r->vb_ci) {
+        cbm_ht_foreach(r->vb_ci, free_vb_ci, NULL);
+        cbm_ht_free(r->vb_ci);
+    }
+    if (r->vb_types) {
+        cbm_ht_foreach(r->vb_types, free_vb_type_key, NULL);
+        cbm_ht_free(r->vb_types);
+    }
     cbm_ht_foreach(r->exact, free_label, NULL);
     cbm_ht_free(r->exact);
     for (int i = 0; i < r->label_pool_n; i++) {
@@ -1678,6 +1827,9 @@ void cbm_registry_add_lang_in_module(cbm_registry_t *r, const char *name,
     const char *primary =
         name && cbm_qn_callable_base_len_named(owned_qn, name) < strlen(owned_qn) ? name : derived;
     index_under_name(r, primary, owned_qn, lang);
+    if (lang == CBM_LANG_VBNET) {
+        vb_ci_record(r, primary, label);
+    }
     /* '#' is a QN fence; no extractor mints one for a REGISTERED definition
      * today (Rust cfg twins are variants of one plain QN; a C macro's QN ends in
      * "#macro", but Macro is no registry label, so it never gets here). A
@@ -2446,6 +2598,10 @@ cbm_resolution_t cbm_registry_resolve_lang(const cbm_registry_t *r, const char *
                                            const char *module_qn, const char **import_map_keys,
                                            const char **import_map_vals, int import_map_count,
                                            CBMLanguage lang) {
+    char vb_buf[CBM_VB_CALLEE_MAX];
+    if (lang == CBM_LANG_VBNET) {
+        callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
+    }
     return registry_resolve_scoped(r, callee_name, module_qn, import_map_keys, import_map_vals,
                                    import_map_count, lang_scope_len(module_qn, lang), false);
 }
@@ -2460,6 +2616,11 @@ cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const c
      * for the name; a C member call and every other language keep them. */
     bool skip_members = lang == CBM_LANG_C && callee_name && !strchr(callee_name, '.') &&
                         !strstr(callee_name, "->");
+    /* VB.NET: resolve in declared casing (vb_canonical_callee). */
+    char vb_buf[CBM_VB_CALLEE_MAX];
+    if (lang == CBM_LANG_VBNET) {
+        callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
+    }
     return registry_resolve_scoped(r, callee_name, module_qn, import_map_keys, import_map_vals,
                                    import_map_count, lang_scope_len(module_qn, lang), skip_members);
 }

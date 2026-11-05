@@ -415,7 +415,12 @@ static const char *vb_field_types[] = {"field_declaration", "property_declaratio
                                        "event_declaration", NULL};
 static const char *vb_module_types[] = {"source_file", NULL};
 static const char *vb_call_types[] = {"invocation", "new_expression", NULL};
-static const char *vb_import_types[] = {"imports_statement", NULL};
+/* No import node types for VB.NET, on purpose. `Imports System.Data` opens an
+ * external .NET namespace, not a project symbol, and import resolution binds
+ * the namespace's last segment by name: on a WebForms code base that sent 703
+ * IMPORTS edges from `Imports System.Data` to an unrelated project method named
+ * `Data`, and `New DataTable()` calls after them through import_map. VB calls
+ * resolve through same_module / unique_name / suffix strategies without it. */
 static const char *vb_branch_types[] = {"if_statement",    "elseif_clause",      "select_case_statement",
                                         "case_block",      "for_statement",      "for_each_statement",
                                         "while_statement", "do_statement",       "try_statement",
@@ -2785,7 +2790,7 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
     // CBM_LANG_VBNET — Visual Basic .NET. repowise-dev/tree-sitter-vb-dotnet v0.3.0 (MIT).
     // Same environment API as C# (System.Environment), so it shares cs_env_funcs.
     [CBM_LANG_VBNET] = {CBM_LANG_VBNET, vb_func_types, vb_class_types, vb_field_types,
-                        vb_module_types, vb_call_types, vb_import_types, vb_import_types,
+                        vb_module_types, vb_call_types, empty_types, empty_types,
                         vb_branch_types, vb_var_types, vb_assign_types, vb_throw_types, NULL,
                         vb_decorator_types, cs_env_funcs, NULL, tree_sitter_vb_dotnet, NULL},
 

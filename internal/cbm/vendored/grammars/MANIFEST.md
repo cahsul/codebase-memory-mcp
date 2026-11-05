@@ -9,8 +9,9 @@ The grammars were originally vendored as bare `parser.c`+`scanner.c` with **no r
 
 ## Summary
 
-- Grammars: **162** — vendored-from-upstream: **140**, first-party/self-maintained: **17**, registry-disagreement: **5** (nim removed 2026-06-12; objectscript_udl + objectscript_routine added 2026-06-24; mojo added 2026-07-01; arkts added 2026-08-26; plsql added 2026-08-27; chialisp added 2026-08-28; javascript + tsx became self-maintained forks 2026-09-25; pascal became a self-maintained fork 2026-09-25 — see notes below)
-- ABI distribution: **9×** ABI-13 **78×** ABI-14 **75×** ABI-15 (runtime ceiling is ABI 15; never vendor ABI 16 without a runtime upgrade)
+- Grammars: **163** — vendored-from-upstream: **141**, first-party/self-maintained: **17**, registry-disagreement: **5** (vb_dotnet added 2026-11-05 on the cahsul fork; nim removed 2026-06-12; objectscript_udl + objectscript_routine added 2026-06-24; mojo added 2026-07-01; arkts added 2026-08-26; plsql added 2026-08-27; chialisp added 2026-08-28; javascript + tsx became self-maintained forks 2026-09-25; pascal became a self-maintained fork 2026-09-25 — see notes below)
+- ABI distribution: **9×** ABI-13 **78×** ABI-14 **76×** ABI-15 (runtime ceiling is ABI 15; never vendor ABI 16 without a runtime upgrade)
+  — vb_dotnet (2026-11-05) ships ABI 15, moving the ABI-15 count from 75 to 76.
   — recounted from the tree 2026-09-25 after the tsx fork was regenerated with tree-sitter-cli 0.25.10, moving `tsx` from ABI 14 to ABI 15 (was `9×/79×/74×`).
   — recounted from the tree 2026-08-30 after the perl v1.2.1 refresh moved `perl` from ABI 14 to ABI 15 (was `9×/80×/73×`). Neither side of the rebase had this right: main's line was correct for main, and this branch still carried the pre-2026-08-28 `7×/84×/65×`. Regenerate, never increment.
   — recounted from the tree 2026-08-28. This line had drifted: it read `7×/86×/65×`, which sums to 158 against 161 vendored grammars, so it was wrong before Chialisp was added and incrementing it would have carried the error forward. Regenerate with:
@@ -89,6 +90,7 @@ Guarded by the `contract_all_grammars_in_graph` graph-breadth test in
 | ispc     | added to the C-family declarator-name gate (extends tree-sitter-c) |
 | odin     | `resolve_func_name`: `procedure_declaration` → `identifier` child |
 | pascal   | `resolve_func_name`: `defProc` → `header` (`declProc`) child's `name` field |
+| vb_dotnet | `resolve_func_name` / `resolve_method_name`: `constructor_declaration` (`Sub New`) has no `name` field — the node stands in and `cbm_func_name_node_text` names it `New`; `find_class_body`: members are direct children of `class_block`/`module_block`/`structure_block`/`interface_block`; `extract_vbnet_vars`: one name per `variable_declarator`; callee (extract_calls.c): `invocation` → `target` (identifier / member_access / with_member_access member), `new_expression` → `type` with `(Of T)` cut; imports deliberately not extracted (`Imports` opens an external .NET namespace; name-binding its last segment sent `Imports System.Data` to unrelated project defs named `Data`); registry (src/pipeline/registry.c): case-insensitive callee rewrite `vb_canonical_callee`, limited to bare calls and members of known VB types |
 | plsql    | `resolve_func_name`: `fnc_name`/`prc_name` fields; `extract_class_def`: `package_name`/`type_name`/`trigger_name` fields; `extract_plsql_callee` (extract_calls.c): `ref_call` → `referenced_element`, package-qualified `ref_name_parent.ref_name`; usage vocabulary (extract_usages.c): `identifier`, with the upstream `parameter` kind (a ref_call ARGUMENT wrapper) carved out of the whole-binding rule |
 | racket   | `extract_lisp_def`: `(define …)` head-symbol forms in `list` |
 | rescript | `resolve_func_name`: `function` (arrow) → enclosing `let_binding`'s `pattern` field |
@@ -252,6 +254,7 @@ row instead.
 | toml | 14 | tree-sitter-grammars/tree-sitter-toml | `64b56832c2cf` | MISMATCH | ✅ |
 | typescript | 14 | tree-sitter/tree-sitter-typescript | `75b3874edb2d` | VERIFIED-BOTH | ✅ |
 | typst | 14 | uben0/tree-sitter-typst | `46cf4ded12ee` | VERIFIED-BOTH | ✅ |
+| vb_dotnet | 15 | repowise-dev/tree-sitter-vb-dotnet (fork of CodeAnt-AI/tree-sitter-vb-dotnet) | `4e002ba` | UPSTREAM-RELEASE (v0.3.0 / PyPI 0.3.0; `src/parser.c` byte-identical, no scanner) | ✅ |
 | verilog | 14 | tree-sitter/tree-sitter-verilog | `4457145e795b` | VERIFIED-HELIX | ✅ |
 | vhdl | 15 | jpt13653903/tree-sitter-vhdl | `c2d9be3d5ab7` | MISMATCH | ✅ |
 | vim | 15 | tree-sitter-grammars/tree-sitter-vim | `3092fcd99eb8` | VERIFIED-BOTH | ✅ |

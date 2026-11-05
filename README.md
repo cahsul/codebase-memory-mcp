@@ -5,7 +5,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/DeusData/codebase-memory-mcp/release.yml?branch=main&label=main%20CI)](https://github.com/DeusData/codebase-memory-mcp/actions/workflows/release.yml)
 [![Native and frontend tests](https://img.shields.io/badge/tests-native_%2B_frontend-blue)](#tests)
 [![MCP tools](https://img.shields.io/badge/MCP_tools-17-blue)](#mcp-tools)
-[![Languages](https://img.shields.io/badge/languages-162-orange)](https://github.com/DeusData/codebase-memory-mcp)
+[![Languages](https://img.shields.io/badge/languages-163-orange)](https://github.com/DeusData/codebase-memory-mcp)
 [![Hybrid LSP](https://img.shields.io/badge/Hybrid_LSP-type_resolution-blue)](#hybrid-lsp)
 [![Agents](https://img.shields.io/badge/agent_surfaces-45-purple)](https://github.com/DeusData/codebase-memory-mcp)
 [![Pure C](https://img.shields.io/badge/pure_C-no_language_runtime-blue)](https://github.com/DeusData/codebase-memory-mcp)
@@ -1123,14 +1123,14 @@ codebase-memory-mcp ships a **lightweight C implementation of language type-reso
 
 **Two-layer architecture:**
 
-1. **Tree-sitter pass**: fast, syntactic, runs for every one of the 162 languages. Extracts definitions, calls, imports.
+1. **Tree-sitter pass**: fast, syntactic, runs for every one of the 163 languages. Extracts definitions, calls, imports.
 2. **Hybrid LSP pass**: type-aware, runs above the tree-sitter pass per-language. Refines call edges using the import graph plus a per-file or pre-built cross-file definition registry. Languages without a Hybrid LSP pass yet fall back to textual resolution, with coverage varying by language and construct.
 
 The result is a knowledge graph accurate enough to drive `trace_path` across packages, inheritance hierarchies, and stdlib calls; without paying for a language server process per project.
 
 ## Language Support
 
-162 languages, counted by the vendored grammar directories in [the parser manifest](internal/cbm/vendored/grammars/MANIFEST.md). Benchmarked against 64 real open-source repositories (78 to 49K nodes):
+163 languages, counted by the vendored grammar directories in [the parser manifest](internal/cbm/vendored/grammars/MANIFEST.md). Benchmarked against 64 real open-source repositories (78 to 49K nodes):
 
 | Tier | Score | Languages |
 |------|-------|-----------|
@@ -1157,7 +1157,7 @@ src/
   ui/                 Local HTTP server + embedded CBM Lens frontend
   foundation/         Platform abstractions (threads, filesystem, logging, memory)
 graph-ui/             CodeAtlasWeb: React, Monaco, and Three.js browser frontend
-internal/cbm/         Vendored tree-sitter grammars (162 languages) + AST extraction engine
+internal/cbm/         Vendored tree-sitter grammars (163 languages) + AST extraction engine
 ```
 
 ## Security
