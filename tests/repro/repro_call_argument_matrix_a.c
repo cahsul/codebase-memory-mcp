@@ -649,6 +649,26 @@ SEMANTIC_CASE(csharp, CSHARP, "Sample.cs",
               "}\n",
               "handler", "invocation_expression", 2, 2);
 
+SEMANTIC_CASE(vbnet, VBNET, "Sample.vb",
+              "Public Class Sample\n"
+              "    Shared Function handler() As Integer\n"
+              "        Return 0\n"
+              "    End Function\n"
+              "    Shared Function accept(ByVal value As Integer) As Integer\n"
+              "        Return value\n"
+              "    End Function\n"
+              "    Shared Function argument(ByVal handler As Integer) As Integer\n"
+              "        Return accept(handler)\n"
+              "    End Function\n"
+              "    Shared Function direct() As Integer\n"
+              "        Return handler()\n"
+              "    End Function\n"
+              "    Shared Function bare(ByVal handler As Integer) As Integer\n"
+              "        Return handler\n"
+              "    End Function\n"
+              "End Class\n",
+              "handler", "invocation", 2, 2);
+
 SEMANTIC_CASE(php, PHP, "main.php",
               "<?php\n"
               "function handler() { return 0; }\n"
@@ -1199,6 +1219,7 @@ SEMANTIC_CASE(agda, AGDA, "Main.agda",
     X(java)               \
     X(cpp)                \
     X(csharp)             \
+    X(vbnet)              \
     X(php)                \
     X(lua)                \
     X(scala)              \
@@ -1272,8 +1293,8 @@ MATRIX_A_CASES(DEFINE_MATRIX_TEST)
 static const MatrixCase *const MATRIX_A_CASE_ROWS[] = {MATRIX_A_CASES(MATRIX_CASE_POINTER)};
 #undef MATRIX_CASE_POINTER
 
-_Static_assert(sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]) == 68,
-               "GO..ARKTS call-capable matrix must contain exactly 68 language rows");
+_Static_assert(sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]) == 69,
+               "GO..ARKTS call-capable matrix (plus VBNET) must contain exactly 69 language rows");
 
 size_t repro_call_argument_matrix_a_copy_language_ids(CBMLanguage *language_ids, size_t capacity) {
     size_t row_count = sizeof(MATRIX_A_CASE_ROWS) / sizeof(MATRIX_A_CASE_ROWS[0]);

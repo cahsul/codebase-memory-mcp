@@ -1240,6 +1240,133 @@ TEST(csharp_constructor_of_type_named_extension) {
     PASS();
 }
 
+/* --- VB.NET --- */
+
+/* Read/write record for `name` with the given direction (T-SQL tables). */
+static int has_rw_dir(CBMFileResult *r, const char *name, bool write) {
+    for (int i = 0; i < r->rw.count; i++) {
+        if (r->rw.items[i].var_name && strcmp(r->rw.items[i].var_name, name) == 0 &&
+            r->rw.items[i].is_write == write) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_rw_named(CBMFileResult *r, const char *name) {
+    return has_rw_dir(r, name, true) || has_rw_dir(r, name, false);
+}
+
+/* WebForms code-behind: members are direct children of class_block (no body
+ * node), `Sub New` has no name node, callees live in invocation's `target`, a
+ * With block's `.X()` has an implicit receiver, `New T(Of U)()` names T, a
+ * string naming a SQL object becomes a "sql:" callee, and `Imports` (an
+ * external namespace) yields no import. */
+TEST(vbnet_code_behind_defs_and_calls) {
+    CBMFileResult *r = extract("Imports System.Data\r\n"
+                               "Partial Class OrderPage\r\n"
+                               "    Inherits System.Web.UI.Page\r\n"
+                               "    Private counter As Integer, label As String\r\n"
+                               "    Public Sub New()\r\n"
+                               "    End Sub\r\n"
+                               "    Protected Sub Page_Load(ByVal s As Object, ByVal e As EventArgs) "
+                               "Handles Me.Load\r\n"
+                               "        LoadGrid(\"A\")\r\n"
+                               "        helper.Compute(1)\r\n"
+                               "        Dim items As Object = New List(Of String)()\r\n"
+                               "        Dim cmd As New SqlCommand(\"stp_order_list\", conn)\r\n"
+                               "    End Sub\r\n"
+                               "    Private Sub LoadGrid(ByVal code As String)\r\n"
+                               "        With grid\r\n"
+                               "            .Refresh()\r\n"
+                               "        End With\r\n"
+                               "    End Sub\r\n"
+                               "End Class\r\n",
+                               CBM_LANG_VBNET, "t", "OrderPage.aspx.vb");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Class", "OrderPage"));
+    ASSERT(has_def(r, "Method", "New"));
+    ASSERT(has_def(r, "Method", "Page_Load"));
+    ASSERT(has_def(r, "Method", "LoadGrid"));
+    ASSERT_FALSE(has_def(r, "Function", "LoadGrid"));
+    ASSERT(has_call(r, "LoadGrid"));
+    ASSERT(has_call(r, "helper.Compute"));
+    ASSERT(has_call(r, "List"));
+    ASSERT_FALSE(has_call(r, "List(Of"));
+    ASSERT(has_call(r, "Refresh"));
+    ASSERT(has_call(r, "sql:stp_order_list"));
+    ASSERT_EQ(r->imports.count, 0);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* --- T-SQL (SQL Server object scripts, extract_tsql.c) --- */
+
+TEST(tsql_procedure_reads_writes_calls) {
+    CBMFileResult *r =
+        extract("SET ANSI_NULLS ON\r\nGO\r\n"
+                "CREATE OR ALTER PROCEDURE [dbo].[stp_order_save] @OrderID bigint AS\r\n"
+                "BEGIN\r\n"
+                "    SET NOCOUNT ON;\r\n"
+                "    -- FROM tblCommented is only a comment\r\n"
+                "    INSERT INTO dbo.tblOrder (Status) VALUES (N'FROM tblInString');\r\n"
+                "    UPDATE a SET a.Qty = 1 FROM tblOrderLine a\r\n"
+                "        JOIN [dbo].[tblOrder] o ON o.OrderID = a.OrderID;\r\n"
+                "    WITH cte AS (SELECT * FROM tblOrderLine) SELECT * FROM cte;\r\n"
+                "    CREATE TABLE #tmp (ID bigint);\r\n"
+                "    INSERT INTO #tmp SELECT LineID FROM tblOrderLine;\r\n"
+                "    DELETE l FROM tblOrderLog l WHERE l.OrderID = @OrderID;\r\n"
+                "    EXEC dbo.stp_order_log @OrderID;\r\n"
+                "END\r\nGO\r\n",
+                CBM_LANG_SQL, "t", "StoredProcedures/stp_order_save.sql");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "stp_order_save"));
+    ASSERT_FALSE(has_def_any(r, "#tmp"));
+    ASSERT(has_call(r, "stp_order_log"));
+    ASSERT(has_rw_dir(r, "tblOrder", true));
+    ASSERT(has_rw_dir(r, "tblOrder", false));
+    ASSERT(has_rw_dir(r, "tblOrderLine", true)); /* UPDATE through alias `a` */
+    ASSERT(has_rw_dir(r, "tblOrderLine", false));
+    ASSERT(has_rw_dir(r, "tblOrderLog", true)); /* DELETE through alias `l` */
+    ASSERT_FALSE(has_rw_named(r, "a"));
+    ASSERT_FALSE(has_rw_named(r, "l"));
+    ASSERT_FALSE(has_rw_named(r, "cte"));
+    ASSERT_FALSE(has_rw_named(r, "#tmp"));
+    ASSERT_FALSE(has_rw_named(r, "tblCommented"));
+    ASSERT_FALSE(has_rw_named(r, "tblInString"));
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(tsql_table_and_view_scripts) {
+    CBMFileResult *t = extract("CREATE TABLE [dbo].[tblOrder] (\r\n"
+                               "    [OrderID] bigint IDENTITY(1,1) NOT NULL\r\n"
+                               ")\r\nGO\r\n",
+                               CBM_LANG_SQL, "t", "Tables/tblOrder.sql");
+    ASSERT_NOT_NULL(t);
+    ASSERT(has_def(t, "Class", "tblOrder"));
+    cbm_free_result(t);
+    CBMFileResult *v = extract("CREATE VIEW dbo.vwOpenOrder AS\r\n"
+                               "SELECT o.OrderID FROM dbo.tblOrder o WITH (NOLOCK)\r\nGO\r\n",
+                               CBM_LANG_SQL, "t", "Views/vwOpenOrder.sql");
+    ASSERT_NOT_NULL(v);
+    ASSERT(has_def(v, "Class", "vwOpenOrder"));
+    ASSERT(has_rw_dir(v, "tblOrder", false));
+    cbm_free_result(v);
+    PASS();
+}
+
+/* ANSI SQL without SQL Server markers keeps the grammar path. */
+TEST(tsql_detection_needs_a_tsql_marker) {
+    const char *ansi = "CREATE TABLE orders (id integer primary key);\n";
+    const char *tsql = "CREATE TABLE [dbo].[orders] ([id] bigint NOT NULL)\nGO\n";
+    ASSERT_FALSE(cbm_tsql_looks_like(ansi, (int)strlen(ansi)));
+    ASSERT(cbm_tsql_looks_like(tsql, (int)strlen(tsql)));
+    PASS();
+}
+
 /* Escaping a type identifier does not change its constructor's identity. */
 TEST(csharp_constructor_of_escaped_type_named_extension) {
     const char *src = "namespace App { public class @extension { "
@@ -15370,6 +15497,10 @@ SUITE(extraction) {
     RUN_TEST(csharp_interface);
     RUN_TEST(csharp_extension_block_members);
     RUN_TEST(csharp_constructor_of_type_named_extension);
+    RUN_TEST(vbnet_code_behind_defs_and_calls);
+    RUN_TEST(tsql_procedure_reads_writes_calls);
+    RUN_TEST(tsql_table_and_view_scripts);
+    RUN_TEST(tsql_detection_needs_a_tsql_marker);
     RUN_TEST(csharp_constructor_of_escaped_type_named_extension);
     RUN_TEST(csharp_extension_block_conditional_members);
     RUN_TEST(swift_class);
