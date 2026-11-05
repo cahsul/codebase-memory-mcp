@@ -120,7 +120,15 @@ struct cbm_registry {
      * no type, so `dr.IsNull(...)` (System.Data) never turns into a call of a
      * project `isNULL`. Keys heap-owned, values unused. */
     CBMHashTable *vb_types;
+    /* T-SQL object names are case-insensitive under SQL Server's default
+     * collations: lowercase name -> declared name of every SQL definition, same
+     * shape and tie rule as vb_ci. Feeds SQL callers and VB "sql:" callees. */
+    CBMHashTable *sql_ci;
 };
+
+/* Prefix a VB callee carries when it came from a string literal naming a SQL
+ * object (extract_unified.c, handle_vb_sql_strings). */
+#define CBM_VB_SQL_PREFIX "sql:"
 
 /* Longest VB callee text vb_canonical_callee rewrites; longer text is resolved
  * as written. */
@@ -1169,6 +1177,7 @@ static int xl_family(CBMLanguage lang) {
         return XL_FAM_JVM;
     case CBM_LANG_CSHARP:
     case CBM_LANG_FSHARP:
+    case CBM_LANG_VBNET: /* a VB web project calls C# class libraries by name */
         return XL_FAM_DOTNET;
     case CBM_LANG_PHP:
     case CBM_LANG_BLADE:
@@ -1462,6 +1471,7 @@ cbm_registry_t *cbm_registry_new(void) {
     r->by_name = cbm_ht_create(CBM_SZ_512);
     r->vb_ci = cbm_ht_create(CBM_SZ_512);
     r->vb_types = cbm_ht_create(CBM_SZ_512);
+    r->sql_ci = cbm_ht_create(CBM_SZ_512);
     return r;
 }
 
@@ -1483,10 +1493,11 @@ static bool vb_label_is_type(const char *label) {
                      strcmp(label, "Module") == 0 || strcmp(label, "Type") == 0);
 }
 
-/* Remember the declared casing of a VB definition's simple name (see vb_ci),
- * and whether the name is a type (see vb_types). */
-static void vb_ci_record(cbm_registry_t *r, const char *name, const char *label) {
-    if (!r->vb_ci || !name || !name[0]) {
+/* Remember the declared casing of a definition's simple name in `ci` (vb_ci or
+ * sql_ci) and, when `types` is given, whether the name is a type (vb_types). */
+static void ci_record(CBMHashTable *ci, CBMHashTable *types, const char *name,
+                      const char *label) {
+    if (!ci || !name || !name[0]) {
         return;
     }
     size_t n = strlen(name);
@@ -1498,13 +1509,13 @@ static void vb_ci_record(cbm_registry_t *r, const char *name, const char *label)
         lower[i] = (char)tolower((unsigned char)name[i]);
     }
     lower[n] = '\0';
-    if (r->vb_types && vb_label_is_type(label) && !cbm_ht_has(r->vb_types, lower)) {
+    if (types && vb_label_is_type(label) && !cbm_ht_has(types, lower)) {
         char *tkey = strdup(lower);
         if (tkey) {
-            cbm_ht_set(r->vb_types, tkey, (void *)tkey);
+            cbm_ht_set(types, tkey, (void *)tkey);
         }
     }
-    char *have = cbm_ht_get(r->vb_ci, lower);
+    char *have = cbm_ht_get(ci, lower);
     if (!have) {
         char *key = strdup(lower);
         char *val = strdup(name);
@@ -1513,16 +1524,34 @@ static void vb_ci_record(cbm_registry_t *r, const char *name, const char *label)
             free(val);
             return;
         }
-        cbm_ht_set(r->vb_ci, key, val);
+        cbm_ht_set(ci, key, val);
         return;
     }
     if (strcmp(name, have) < 0) {
         char *val = strdup(name);
         if (val) {
             /* Same key: the table keeps its owned key and returns the old value. */
-            free(cbm_ht_set(r->vb_ci, cbm_ht_get_key(r->vb_ci, lower), val));
+            free(cbm_ht_set(ci, cbm_ht_get_key(ci, lower), val));
         }
     }
+}
+
+/* Declared casing of a bare SQL object name (sql_ci), or `name` itself. */
+static const char *sql_canonical_name(const cbm_registry_t *r, const char *name, char *buf,
+                                      size_t cap) {
+    if (!r || !r->sql_ci || !name || cbm_ht_has(r->by_name, name)) {
+        return name;
+    }
+    size_t n = strlen(name);
+    if (n == 0 || n >= cap || n >= CBM_VB_SEGMENT_MAX) {
+        return name;
+    }
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = (char)tolower((unsigned char)name[i]);
+    }
+    buf[n] = '\0';
+    const char *canon = cbm_ht_get(r->sql_ci, buf);
+    return canon ? canon : name;
 }
 
 /* VB.NET callee text in declared casing. A segment that has no exact by-name
@@ -1620,6 +1649,10 @@ void cbm_registry_free(cbm_registry_t *r) {
     if (r->vb_types) {
         cbm_ht_foreach(r->vb_types, free_vb_type_key, NULL);
         cbm_ht_free(r->vb_types);
+    }
+    if (r->sql_ci) {
+        cbm_ht_foreach(r->sql_ci, free_vb_ci, NULL);
+        cbm_ht_free(r->sql_ci);
     }
     cbm_ht_foreach(r->exact, free_label, NULL);
     cbm_ht_free(r->exact);
@@ -1828,7 +1861,9 @@ void cbm_registry_add_lang_in_module(cbm_registry_t *r, const char *name,
         name && cbm_qn_callable_base_len_named(owned_qn, name) < strlen(owned_qn) ? name : derived;
     index_under_name(r, primary, owned_qn, lang);
     if (lang == CBM_LANG_VBNET) {
-        vb_ci_record(r, primary, label);
+        ci_record(r->vb_ci, r->vb_types, primary, label);
+    } else if (lang == CBM_LANG_SQL) {
+        ci_record(r->sql_ci, NULL, primary, label);
     }
     /* '#' is a QN fence; no extractor mints one for a REGISTERED definition
      * today (Rust cfg twins are variants of one plain QN; a C macro's QN ends in
@@ -2601,9 +2636,46 @@ cbm_resolution_t cbm_registry_resolve_lang(const cbm_registry_t *r, const char *
     char vb_buf[CBM_VB_CALLEE_MAX];
     if (lang == CBM_LANG_VBNET) {
         callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
+    } else if (lang == CBM_LANG_SQL) {
+        callee_name = sql_canonical_name(r, callee_name, vb_buf, sizeof(vb_buf));
     }
     return registry_resolve_scoped(r, callee_name, module_qn, import_map_keys, import_map_vals,
                                    import_map_count, lang_scope_len(module_qn, lang), false);
+}
+
+/* A VB "sql:<name>" callee: a string literal that names a SQL routine
+ * (`New SqlCommand("stp_order_list", conn)`). Resolves only against SQL
+ * definitions labelled Function (procedures, functions, triggers), matched
+ * case-insensitively as SQL Server does; a string naming none gives no edge.
+ * Several namesakes (one script deployed under two folders) bind the
+ * byte-wise smallest QN at lower confidence. */
+static cbm_resolution_t vb_resolve_sql_routine(const cbm_registry_t *r, const char *name) {
+    char buf[CBM_VB_CALLEE_MAX];
+    qn_array_t *arr = cbm_ht_get(r->by_name, name);
+    if (!arr) {
+        arr = cbm_ht_get(r->by_name, sql_canonical_name(r, name, buf, sizeof(buf)));
+    }
+    if (!arr) {
+        return empty_result();
+    }
+    const char *best = NULL;
+    int n = 0;
+    for (int i = 0; i < arr->count; i++) {
+        const char *qn = arr->items[i];
+        CBMLanguage l = arr->count <= arr->is_test_cap ? (CBMLanguage)arr->lang[i]
+                                                       : registry_entry_language(r, qn);
+        if (l != CBM_LANG_SQL || !registry_label_is_callable(cbm_registry_label_of(r, qn))) {
+            continue;
+        }
+        n++;
+        if (!best || strcmp(qn, best) < 0) {
+            best = qn;
+        }
+    }
+    if (!best) {
+        return empty_result();
+    }
+    return (cbm_resolution_t){best, "vb_sql_string", n == 1 ? 0.9 : 0.6, n};
 }
 
 cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const char *callee_name,
@@ -2616,10 +2688,18 @@ cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const c
      * for the name; a C member call and every other language keep them. */
     bool skip_members = lang == CBM_LANG_C && callee_name && !strchr(callee_name, '.') &&
                         !strstr(callee_name, "->");
-    /* VB.NET: resolve in declared casing (vb_canonical_callee). */
+    /* VB.NET: a "sql:" callee resolves only to a SQL routine; any other VB
+     * callee resolves in declared casing (vb_canonical_callee). SQL callers
+     * resolve case-insensitively (sql_canonical_name). */
     char vb_buf[CBM_VB_CALLEE_MAX];
+    if (lang == CBM_LANG_VBNET && callee_name &&
+        strncmp(callee_name, CBM_VB_SQL_PREFIX, strlen(CBM_VB_SQL_PREFIX)) == 0) {
+        return vb_resolve_sql_routine(r, callee_name + strlen(CBM_VB_SQL_PREFIX));
+    }
     if (lang == CBM_LANG_VBNET) {
         callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));
+    } else if (lang == CBM_LANG_SQL) {
+        callee_name = sql_canonical_name(r, callee_name, vb_buf, sizeof(vb_buf));
     }
     return registry_resolve_scoped(r, callee_name, module_qn, import_map_keys, import_map_vals,
                                    import_map_count, lang_scope_len(module_qn, lang), skip_members);

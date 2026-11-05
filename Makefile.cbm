@@ -392,6 +392,7 @@ EXTRACTION_SRCS = \
     $(CBM_DIR)/extract_channels.c \
     $(CBM_DIR)/extract_k8s.c \
     $(CBM_DIR)/extract_dbt.c \
+    $(CBM_DIR)/extract_tsql.c \
     $(CBM_DIR)/doclink.c \
     $(CBM_DIR)/doclink_cs.c \
     $(CBM_DIR)/doclink_md.c \

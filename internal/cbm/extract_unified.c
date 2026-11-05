@@ -11,6 +11,7 @@
 
 enum { MAX_INFRA_BINDINGS = 8 };
 
+#include <ctype.h>  // isalnum/isalpha (VB SQL-name strings)
 #include <stdint.h> // uint32_t, uint8_t
 #include <string.h>
 #include <strings.h> // strcasecmp (ObjectScript type inference)
@@ -1424,6 +1425,68 @@ static void handle_string_refs(CBMExtractCtx *ctx, TSNode node, const WalkState 
         .kind = (CBMStringRefKind)kind_val,
     };
     cbm_stringref_push(&ctx->result->string_refs, ctx->arena, ref);
+}
+
+// --- VB.NET: SQL routine names in string literals ---
+
+/* ADO.NET names a stored procedure or function by string:
+ * `New SqlCommand("stp_order_list", conn)`, `cmd.CommandText = "dbo.stp_x"`,
+ * `ExecuteSP("stp_x", params)`. Inside a function, a VB string literal whose
+ * whole content is an object name (letters, digits, '_', schema dots,
+ * brackets) is emitted as a "sql:<name>" call; the registry resolves those
+ * only against SQL routines (vb_resolve_sql_routine), so text that names none
+ * adds no edge. Strings with spaces, quotes or other punctuation (SQL text,
+ * messages) never qualify. `Dim c As New SqlCommand("x")` folds into an
+ * as_clause rather than an invocation, which is why this reads every string
+ * node instead of call arguments.
+ * Example: "[dbo].[stp_order_list]" -> callee "sql:stp_order_list". */
+enum { VB_SQL_NAME_MAX = 128, VB_SQL_NAME_MIN = 3 };
+
+static void handle_vb_sql_strings(CBMExtractCtx *ctx, TSNode node, const WalkState *state) {
+    if (ctx->language != CBM_LANG_VBNET || !state->enclosing_func_qn ||
+        state->enclosing_func_qn == ctx->module_qn ||
+        strcmp(ts_node_type(node), "string_literal") != 0) {
+        return;
+    }
+    uint32_t s = ts_node_start_byte(node);
+    uint32_t e = ts_node_end_byte(node);
+    if (e < s + CBM_QUOTE_PAIR + VB_SQL_NAME_MIN || e - s > VB_SQL_NAME_MAX ||
+        ctx->source[s] != '"' || ctx->source[e - SKIP_ONE] != '"') {
+        return;
+    }
+    const char *p = ctx->source + s + SKIP_ONE;
+    size_t len = e - s - CBM_QUOTE_PAIR;
+    const char *seg = p; /* start of the last dot segment */
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)p[i];
+        if (c == '.') {
+            seg = p + i + SKIP_ONE;
+            continue;
+        }
+        if (!(isalnum(c) || c == '_' || c == '[' || c == ']')) {
+            return;
+        }
+    }
+    char name[VB_SQL_NAME_MAX];
+    size_t n = 0;
+    for (const char *q = seg; q < p + len && n + SKIP_ONE < sizeof(name); q++) {
+        if (*q != '[' && *q != ']') {
+            name[n++] = *q;
+        }
+    }
+    name[n] = '\0';
+    if (n < VB_SQL_NAME_MIN || !(isalpha((unsigned char)name[0]) || name[0] == '_')) {
+        return;
+    }
+    CBMCall call = {0};
+    call.callee_name = cbm_arena_sprintf(ctx->arena, "sql:%s", name);
+    call.enclosing_func_qn = state->enclosing_func_qn;
+    call.start_line = (int)ts_node_start_point(node).row + TS_LINE_OFFSET;
+    call.site_start_byte = s;
+    call.site_end_byte = e;
+    if (call.callee_name) {
+        cbm_calls_push(&ctx->result->calls, ctx->arena, call);
+    }
 }
 
 // --- URL-builder helpers (issue #1009) ---
@@ -2897,6 +2960,7 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
             handle_env_accesses(ctx, node, spec, &state);
             handle_type_assigns(ctx, node, spec, &state);
             handle_string_refs(ctx, node, &state);
+            handle_vb_sql_strings(ctx, node, &state);
             handle_yaml_nested(ctx, node);
             scan_infra_bindings(ctx, node);
 

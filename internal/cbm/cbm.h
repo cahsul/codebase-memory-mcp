@@ -1408,6 +1408,11 @@ bool cbm_diagram_fence_is_diagram(const char *source, TSNode block);
 const char *cbm_diagram_fence_labels(CBMExtractCtx *ctx, TSNode block);
 /* A diagram file (CBM_LANG_DIAGRAM): its format comes from its extension. */
 void cbm_extract_diagram_file(CBMExtractCtx *ctx);
+/* SQL Server (T-SQL) object scripts, read from the text instead of the SQL
+ * grammar (extract_tsql.c): routines, tables and views become definitions,
+ * EXEC becomes calls, table reads/writes become rw records. */
+bool cbm_tsql_looks_like(const char *source, int source_len);
+void cbm_tsql_extract(CBMExtractCtx *ctx);
 
 /* OpenAPI / Swagger documents (openapi.c): a Route definition per operation and
  * a doc link per operationId. Self-gated: openapi.json / swagger.json, and YAML
