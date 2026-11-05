@@ -2732,6 +2732,100 @@ static cbm_resolution_t vb_resolve_sql_routine(const cbm_registry_t *r, const ch
     return (cbm_resolution_t){best, "vb_sql_string", n == 1 ? 0.9 : 0.6, n};
 }
 
+/* Lower-cased copy of the first `n` bytes of s into buf (cap bytes). */
+static bool vb_lower(const char *s, size_t n, char *buf, size_t cap) {
+    if (n == 0 || n >= cap) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = (char)tolower((unsigned char)s[i]);
+    }
+    buf[n] = '\0';
+    return true;
+}
+
+/* True when `name` (any case) is a project type: a VB class, module,
+ * structure... (vb_types), or a type-like definition of another language,
+ * such as a C# class a VB page uses. */
+static bool registry_names_type(const cbm_registry_t *r, const char *name, size_t n) {
+    char lower[CBM_VB_SEGMENT_MAX];
+    if (!vb_lower(name, n, lower, sizeof(lower))) {
+        return false;
+    }
+    if (r->vb_types && cbm_ht_has(r->vb_types, lower)) {
+        return true;
+    }
+    char exact[CBM_VB_SEGMENT_MAX];
+    memcpy(exact, name, n);
+    exact[n] = '\0';
+    const qn_array_t *arr = cbm_ht_get(r->by_name, exact);
+    for (int i = 0; arr && i < arr->count; i++) {
+        if (cbm_label_is_type_like(cbm_registry_label_of(r, arr->items[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A VB "vbtype:T.M" callee (CBM_VB_TYPED_PREFIX): the receiver is declared As
+ * T, so only a method M whose owning segment is T (any case) answers, among
+ * every namesake in the project. T outside the project (UpdatePanel, DataRow,
+ * String) or M not declared on T (inherited from a framework base) gives no
+ * edge: the declaration rules out every other class, so nothing is guessed.
+ * Example: "vbtype:Ledger_Book.PostLedger" binds Ledger_Book's method, never
+ * the same-named method of Branch_Ledger. Partial classes share the name, so
+ * the method binds whichever file declares it. */
+static cbm_resolution_t vb_resolve_typed_member(const cbm_registry_t *r, const char *typed) {
+    const char *dot = strrchr(typed, '.');
+    if (!dot || dot == typed || !dot[1]) {
+        return empty_result();
+    }
+    size_t tlen = (size_t)(dot - typed);
+    const char *member = dot + SKIP_ONE;
+    if (!registry_names_type(r, typed, tlen)) {
+        return empty_result();
+    }
+    const qn_array_t *arr = cbm_ht_get(r->by_name, member);
+    if (!arr && r->vb_ci) {
+        char lower[CBM_VB_SEGMENT_MAX];
+        const char *canon = vb_lower(member, strlen(member), lower, sizeof(lower))
+                                ? cbm_ht_get(r->vb_ci, lower)
+                                : NULL;
+        arr = canon ? cbm_ht_get(r->by_name, canon) : NULL;
+    }
+    const char *best = NULL;
+    int n = 0;
+    for (int i = 0; arr && i < arr->count; i++) {
+        const char *qn = arr->items[i];
+        const char *last = strrchr(qn, '.');
+        if (!last || last == qn) {
+            continue;
+        }
+        const char *owner = last;
+        while (owner > qn && owner[-1] != '.') {
+            owner--;
+        }
+        if ((size_t)(last - owner) != tlen) {
+            continue;
+        }
+        size_t j = 0;
+        while (j < tlen && tolower((unsigned char)owner[j]) == tolower((unsigned char)typed[j])) {
+            j++;
+        }
+        if (j < tlen || !registry_label_is_callable(cbm_registry_label_of(r, qn))) {
+            continue;
+        }
+        n++;
+        if (!best || strcmp(qn, best) < 0) {
+            best = qn;
+        }
+    }
+    if (!best) {
+        return empty_result();
+    }
+    return (cbm_resolution_t){best, "vb_typed_receiver", n == 1 ? 0.9 : 0.7, n};
+}
+
 cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const char *callee_name,
                                                 const char *module_qn, const char **import_map_keys,
                                                 const char **import_map_vals, int import_map_count,
@@ -2754,6 +2848,25 @@ cbm_resolution_t cbm_registry_resolve_call_lang(const cbm_registry_t *r, const c
     if ((lang == CBM_LANG_VBNET || lang == CBM_LANG_ASPNET) && callee_name &&
         strncmp(callee_name, CBM_QN_CALLEE_PREFIX, strlen(CBM_QN_CALLEE_PREFIX)) == 0) {
         return resolve_exact_qn(r, callee_name + strlen(CBM_QN_CALLEE_PREFIX));
+    }
+    /* VB member calls the extractor typed from the file's declarations
+     * (extract_calls.c vb_receiver_callee). A receiver declared As T binds only
+     * T's method. A receiver declared nowhere in the file (a designer control,
+     * Response, Session) binds only when it names a project type, such as the
+     * module in `common.ShowMessage`; otherwise it would bind a project method
+     * that merely shares the framework method's name (an UpdatePanel's
+     * `upMain.Update()` -> a project class's own Update). */
+    if (lang == CBM_LANG_VBNET && callee_name &&
+        strncmp(callee_name, CBM_VB_TYPED_PREFIX, strlen(CBM_VB_TYPED_PREFIX)) == 0) {
+        return vb_resolve_typed_member(r, callee_name + strlen(CBM_VB_TYPED_PREFIX));
+    }
+    if (lang == CBM_LANG_VBNET && callee_name &&
+        strncmp(callee_name, CBM_VB_FREE_PREFIX, strlen(CBM_VB_FREE_PREFIX)) == 0) {
+        callee_name += strlen(CBM_VB_FREE_PREFIX);
+        const char *dot = strchr(callee_name, '.');
+        if (!dot || !registry_names_type(r, callee_name, (size_t)(dot - callee_name))) {
+            return empty_result();
+        }
     }
     if (lang == CBM_LANG_VBNET || lang == CBM_LANG_ASPNET) {
         callee_name = vb_canonical_callee(r, callee_name, vb_buf, sizeof(vb_buf));

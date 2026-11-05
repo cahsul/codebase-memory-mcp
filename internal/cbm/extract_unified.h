@@ -204,6 +204,16 @@ typedef struct {
     CBMLanguage language;
 
     os_type_map_t os_type_map; // ObjectScript variable → type mapping
+
+    /* VB.NET receiver typing (extract_calls.c vb_receiver_callee): the names
+     * declared in the method being walked (Dim, parameters, For Each, Using,
+     * Catch) and in its class (fields, properties), with their declared types.
+     * Collected once per method, on its first member call. */
+    struct CBMVbDecl *vb_decls;
+    int vb_decl_count;
+    uint32_t vb_decl_scope_start;
+    uint32_t vb_decl_scope_end;
+    bool vb_decl_ready;
 } WalkState;
 
 /* #1912: is `name` bound as a parameter by a Python function or lambda scope

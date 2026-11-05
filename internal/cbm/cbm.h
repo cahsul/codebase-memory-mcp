@@ -1423,6 +1423,13 @@ void cbm_aspnet_extract(CBMExtractCtx *ctx);
  * extraction ("qn:<qn>": VB Handles clauses, ASP.NET wiring). Resolved only
  * against that QN, case-insensitively on a miss (registry.c). */
 #define CBM_QN_CALLEE_PREFIX "qn:"
+/* VB.NET member calls whose receiver the file itself explains
+ * (extract_calls.c vb_receiver_callee, resolved in registry.c):
+ *   "vbtype:T.M" the receiver is declared As T: binds only method M of type T;
+ *   "vbfree:X.M" X is declared nowhere in the file (a designer control,
+ *                Response, Session...): binds only when X names a project type. */
+#define CBM_VB_TYPED_PREFIX "vbtype:"
+#define CBM_VB_FREE_PREFIX "vbfree:"
 
 /* OpenAPI / Swagger documents (openapi.c): a Route definition per operation and
  * a doc link per operationId. Self-gated: openapi.json / swagger.json, and YAML

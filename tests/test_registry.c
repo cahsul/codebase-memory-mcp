@@ -2650,6 +2650,52 @@ TEST(registry_exact_qn_callee_vb_aspnet) {
     PASS();
 }
 
+/* "vbtype:T.M" binds only a method M owned by T; "vbfree:X.M" binds only when
+ * X names a project type. Neither falls back to a name guess: two classes own
+ * PostLedger, and a framework Update must not reach the project's. */
+TEST(registry_vb_typed_and_free_receivers) {
+    cbm_registry_t *r = cbm_registry_new();
+    cbm_registry_add_lang(r, "Ledger_Book", "p.App.clsLedger.Ledger_Book", "Class", CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "PostLedger", "p.App.clsLedger.Ledger_Book.PostLedger", "Method",
+                          CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "Branch_Ledger", "p.App.clsBranchLedger.Branch_Ledger", "Class",
+                          CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "PostLedger", "p.App.clsBranchLedger.Branch_Ledger.PostLedger",
+                          "Method", CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "common", "p.App.common.common", "Module", CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "ShowMessage", "p.App.common.common.ShowMessage", "Method",
+                          CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "Meter", "p.App.clsMeter.Meter", "Class", CBM_LANG_VBNET);
+    cbm_registry_add_lang(r, "Update", "p.App.clsMeter.Meter.Update", "Method", CBM_LANG_VBNET);
+    const char *page = "p.Web.Page.aspx";
+
+    cbm_resolution_t res = cbm_registry_resolve_call_lang(r, "vbtype:Ledger_Book.PostLedger", page,
+                                                          NULL, NULL, 0, CBM_LANG_VBNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.App.clsLedger.Ledger_Book.PostLedger");
+    ASSERT_STR_EQ(res.strategy, "vb_typed_receiver");
+    /* VB ignores case in both the declared type and the call. */
+    res = cbm_registry_resolve_call_lang(r, "vbtype:ledger_book.postledger", page, NULL, NULL, 0,
+                                         CBM_LANG_VBNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.App.clsLedger.Ledger_Book.PostLedger");
+    /* A framework type, or a method the project type does not declare: no edge. */
+    res = cbm_registry_resolve_call_lang(r, "vbtype:UpdatePanel.Update", page, NULL, NULL, 0,
+                                         CBM_LANG_VBNET);
+    ASSERT_NULL(res.qualified_name);
+    res = cbm_registry_resolve_call_lang(r, "vbtype:Ledger_Book.DataBind", page, NULL, NULL, 0,
+                                         CBM_LANG_VBNET);
+    ASSERT_NULL(res.qualified_name);
+    /* A receiver the file never declares: a control binds nothing, a project
+     * module resolves as before. */
+    res = cbm_registry_resolve_call_lang(r, "vbfree:upMain.Update", page, NULL, NULL, 0,
+                                         CBM_LANG_VBNET);
+    ASSERT_NULL(res.qualified_name);
+    res = cbm_registry_resolve_call_lang(r, "vbfree:common.ShowMessage", page, NULL, NULL, 0,
+                                         CBM_LANG_VBNET);
+    ASSERT_STR_EQ(res.qualified_name, "p.App.common.common.ShowMessage");
+    cbm_registry_free(r);
+    PASS();
+}
+
 SUITE(registry) {
     RUN_TEST(python_symbol_scope_len_preserves_file_identity);
     RUN_TEST(registry_python_package_scope_is_explicit);
@@ -2773,4 +2819,5 @@ SUITE(registry) {
     RUN_TEST(registry_python_local_bound_at_own_file_issue1548);
     RUN_TEST(fqn_symbol_prefix_len_matches_fqn_compute);
     RUN_TEST(registry_exact_qn_callee_vb_aspnet);
+    RUN_TEST(registry_vb_typed_and_free_receivers);
 }

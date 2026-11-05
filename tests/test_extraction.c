@@ -1368,6 +1368,75 @@ TEST(tsql_detection_needs_a_tsql_marker) {
     PASS();
 }
 
+/* A member call on a simple receiver carries the receiver's declared type
+ * ("vbtype:T.M") or, when the file declares the receiver nowhere, the receiver
+ * itself ("vbfree:X.M"); a receiver declared without a type stays as written. */
+TEST(vbnet_receiver_typing) {
+    CBMFileResult *r = extract("Public Class OrderPage\r\n"
+                               "    Inherits System.Web.UI.Page\r\n"
+                               "    Private svc As OrderService\r\n"
+                               "    Private Property Repo As OrderRepo\r\n"
+                               "    Shared lab As Object\r\n"
+                               "    Protected Sub Page_Load(ByVal sender As Object, "
+                               "ByVal e As EventArgs)\r\n"
+                               "        Dim nm As New Ledger_Book\r\n"
+                               "        nm.PostLedger(\"A1\")\r\n"
+                               "        Dim a, b As Helper\r\n"
+                               "        b.Run()\r\n"
+                               "        Dim dt = New DataTable()\r\n"
+                               "        dt.Clear()\r\n"
+                               "        Dim x = Lookup()\r\n"
+                               "        x.Refresh()\r\n"
+                               "        With nm\r\n"
+                               "            .Cancel()\r\n"
+                               "        End With\r\n"
+                               "        With New Printer()\r\n"
+                               "            .PrintAll()\r\n"
+                               "        End With\r\n"
+                               "        With upMain\r\n"
+                               "            .Reset()\r\n"
+                               "        End With\r\n"
+                               "        upMain.Update()\r\n"
+                               "        common.ShowMessage(\"ok\")\r\n"
+                               "        svc.Save()\r\n"
+                               "        Me.svc.Close()\r\n"
+                               "        Repo.Load()\r\n"
+                               "        For Each row As GridRow In rows\r\n"
+                               "            row.Paint()\r\n"
+                               "        Next\r\n"
+                               "        Try\r\n"
+                               "        Catch ex As Exception\r\n"
+                               "            ex.ToString()\r\n"
+                               "        End Try\r\n"
+                               "        e.Handled()\r\n"
+                               "        lab.InsertOrder(1)\r\n"
+                               "    End Sub\r\n"
+                               "End Class\r\n",
+                               CBM_LANG_VBNET, "t", "Web/OrderPage.aspx.vb");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_call(r, "vbtype:Ledger_Book.PostLedger"));
+    ASSERT(has_call(r, "vbtype:Helper.Run"));      /* Dim a, b As Helper */
+    ASSERT(has_call(r, "vbtype:DataTable.Clear")); /* Dim dt = New DataTable() */
+    ASSERT(has_call(r, "x.Refresh"));              /* declared without a type */
+    ASSERT_FALSE(has_call(r, "vbfree:x.Refresh"));
+    ASSERT(has_call(r, "vbtype:Ledger_Book.Cancel")); /* With nm */
+    ASSERT(has_call(r, "vbtype:Printer.PrintAll"));   /* With New Printer() */
+    ASSERT(has_call(r, "vbfree:upMain.Reset"));       /* With a designer control */
+    ASSERT(has_call(r, "vbfree:upMain.Update"));
+    ASSERT(has_call(r, "vbfree:common.ShowMessage"));
+    ASSERT(has_call(r, "vbtype:OrderService.Save"));  /* class field */
+    ASSERT(has_call(r, "vbtype:OrderService.Close")); /* Me.field */
+    ASSERT(has_call(r, "vbtype:OrderRepo.Load"));     /* class property */
+    ASSERT(has_call(r, "vbtype:GridRow.Paint"));      /* For Each ... As */
+    ASSERT(has_call(r, "vbtype:Exception.ToString")); /* Catch ... As */
+    ASSERT(has_call(r, "vbtype:EventArgs.Handled"));  /* parameter */
+    ASSERT(has_call(r, "lab.InsertOrder"));           /* As Object: late bound, as written */
+    ASSERT_FALSE(has_call(r, "vbtype:Object."));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* --- ASP.NET Web Forms wiring (VB Handles, extract_aspnet.c) --- */
 
 /* `Handles a.Click, b.Click` wires the method from its class: one call from
@@ -15601,6 +15670,7 @@ SUITE(extraction) {
     RUN_TEST(tsql_table_and_view_scripts);
     RUN_TEST(tsql_detection_needs_a_tsql_marker);
     RUN_TEST(vbnet_handles_clause_calls_from_class);
+    RUN_TEST(vbnet_receiver_typing);
     RUN_TEST(aspnet_page_wires_code_behind);
     RUN_TEST(aspnet_sitemap_sections_and_page_links);
     RUN_TEST(csharp_constructor_of_escaped_type_named_extension);

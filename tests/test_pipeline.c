@@ -10730,6 +10730,77 @@ TEST(pipeline_aspnet_webforms_wiring) {
     PASS();
 }
 
+/* VB receiver typing end to end: two classes own PostLedger, and the page's
+ * `Dim o As New Ledger_Book` / `With o` call must bind the declared one, not
+ * the other by file distance; a designer control's framework `upMain.Update()`
+ * must not bind the project's Meter.Update. */
+TEST(pipeline_vbnet_typed_receiver) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_vbtype_XXXXXX");
+    if (!cbm_mkdtemp(tmp)) {
+        FAIL("tmpdir");
+    }
+    write_temp_file(tmp, "App/clsLedger.vb",
+                    "Public Class Ledger_Book\n"
+                    "    Public Function PostLedger(ByVal p As String) As String\n"
+                    "        Return p\n"
+                    "    End Function\n"
+                    "End Class\n");
+    write_temp_file(tmp, "App/clsBranchLedger.vb",
+                    "Public Class Branch_Ledger\n"
+                    "    Public Function PostLedger(ByVal p As String) As String\n"
+                    "        Return p\n"
+                    "    End Function\n"
+                    "End Class\n");
+    write_temp_file(tmp, "App/clsMeter.vb",
+                    "Public Class Meter\n"
+                    "    Public Sub Update()\n"
+                    "    End Sub\n"
+                    "End Class\n");
+    /* Named closer to the branch file, so file distance alone would pick the twin. */
+    write_temp_file(tmp, "App/BranchPage.aspx.vb",
+                    "Public Class BranchPage\n"
+                    "    Inherits System.Web.UI.Page\n"
+                    "    Protected Sub btnOK_Click(ByVal s As Object, ByVal e As EventArgs)\n"
+                    "        Dim o As New Ledger_Book\n"
+                    "        With o\n"
+                    "            .PostLedger(\"A1\")\n"
+                    "        End With\n"
+                    "        upMain.Update()\n"
+                    "    End Sub\n"
+                    "End Class\n");
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/vbtype.db", tmp);
+    cbm_pipeline_t *p = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(cbm_pipeline_run(p), 0);
+    const char *project = cbm_pipeline_project_name(p);
+    cbm_store_t *s = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(s);
+
+    char caller[512];
+    char right[512];
+    char twin[512];
+    char update[512];
+    snprintf(caller, sizeof(caller), "%s.App.BranchPage.aspx.BranchPage.btnOK_Click", project);
+    snprintf(right, sizeof(right), "%s.App.clsLedger.Ledger_Book.PostLedger", project);
+    snprintf(twin, sizeof(twin), "%s.App.clsBranchLedger.Branch_Ledger.PostLedger", project);
+    snprintf(update, sizeof(update), "%s.App.clsMeter.Meter.Update", project);
+    bool to_right = qn_call_has_strategy(s, project, caller, right, "vb_typed_receiver");
+    bool to_twin = qn_call_has_strategy(s, project, caller, twin, "");
+    bool to_update = qn_call_has_strategy(s, project, caller, update, "");
+
+    cbm_store_close(s);
+    cbm_pipeline_free(p);
+    th_rmtree(tmp);
+
+    ASSERT_TRUE(to_right);
+    ASSERT_FALSE(to_twin);
+    ASSERT_FALSE(to_update);
+    PASS();
+}
+
 /* Issue #2297: a call through `import { foo as fooShared }` produced no CALLS
  * edge, so trace_path(foo, inbound) missed the caller. End to end through the
  * real pipeline: the renamed call, an app-local wrapper that shares the
@@ -32076,6 +32147,7 @@ SUITE(pipeline) {
     RUN_TEST(pipeline_axios_wrapper_baseurl_composes_http_calls_issue1916);
     RUN_TEST(pipeline_ts_crossfile_new_instance_method_call_issue1354);
     RUN_TEST(pipeline_aspnet_webforms_wiring);
+    RUN_TEST(pipeline_vbnet_typed_receiver);
     RUN_TEST(pipeline_ts_renamed_import_call_issue2297);
     RUN_TEST(pipeline_ts_param_property_injection_issue514);
     RUN_TEST(pipeline_python_receiver_suppresses_weak_method_edge);

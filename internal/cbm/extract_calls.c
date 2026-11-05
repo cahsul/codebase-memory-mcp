@@ -4461,6 +4461,392 @@ static const char *resolve_swift_delegating_init(CBMExtractCtx *ctx, const WalkS
     return callee;
 }
 
+/* ── VB.NET receiver typing ──────────────────────────────────────────
+ * `Dim o As New Ledger_Book` then `o.PostLedger(...)`, or the same call written
+ * `.PostLedger(...)` inside `With o`, names its class only through the
+ * receiver's declaration. The plain callee leaves the registry to pick among
+ * every project method of that name by file distance, which bound a page to the
+ * same-named method of a sibling class. So a member call on a simple receiver is
+ * rewritten from what the file declares:
+ *   - declared with a type (Dim / parameter / For Each / Using / Catch in the
+ *     method, field or property of the class): "vbtype:T.M"
+ *     (CBM_VB_TYPED_PREFIX), bound only to method M of type T;
+ *   - declared nowhere in the file (a designer control such as `upMain`, or
+ *     Response, Session, a module name): "vbfree:X.M" (CBM_VB_FREE_PREFIX),
+ *     bound only when X names a project type (`common.ShowMessage`);
+ *   - declared without a type (`Dim x = f()`): left as written.
+ * registry.c resolves both prefixes and never falls back to a name guess. */
+
+struct CBMVbDecl {
+    const char *name;
+    const char *type; /* last segment of the declared type; NULL when none is written */
+    uint32_t pos;     /* start byte of the declaration */
+    uint8_t rank;     /* VB_DECL_LOCAL, VB_DECL_PARAM or VB_DECL_FIELD */
+};
+
+enum { VB_DECL_LOCAL = 0, VB_DECL_PARAM = 1, VB_DECL_FIELD = 2, VB_DECL_INIT_CAP = 32 };
+
+/* The grammar wraps operands in `expression`: `(expression (identifier))`. */
+static TSNode vb_unwrap(TSNode n) {
+    while (!ts_node_is_null(n) && strcmp(ts_node_type(n), "expression") == 0 &&
+           ts_node_named_child_count(n) == SKIP_ONE) {
+        n = ts_node_named_child(n, 0);
+    }
+    return n;
+}
+
+static bool vb_name_eq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return false;
+        }
+    }
+    return *a == *b;
+}
+
+/* Last segment of a written VB type: "Global.System.Web.UI.UpdatePanel" ->
+ * "UpdatePanel", "List(Of String)" -> "List", "String()" -> "String". */
+static const char *vb_type_name(CBMArena *a, TSNode type, const char *source) {
+    if (ts_node_is_null(type)) {
+        return NULL;
+    }
+    char *t = cbm_node_text(a, type, source);
+    if (!t) {
+        return NULL;
+    }
+    char *cut = strpbrk(t, "( \t\r\n");
+    if (cut) {
+        *cut = '\0';
+    }
+    char *last = strrchr(t, '.');
+    char *seg = last ? last + SKIP_ONE : t;
+    if (seg[0] == '[') {
+        seg++;
+        char *rb = strchr(seg, ']');
+        if (rb) {
+            *rb = '\0';
+        }
+    }
+    if (!(isalpha((unsigned char)seg[0]) || seg[0] == '_')) {
+        return NULL;
+    }
+    for (const char *c = seg; *c; c++) {
+        if (!(isalnum((unsigned char)*c) || *c == '_')) {
+            return NULL;
+        }
+    }
+    /* `As Object` is late binding: the call reaches whatever is assigned at
+     * run time (`Shared lab As Object` then `lab.Submit(...)`),
+     * so it states no type and the call keeps its plain callee. */
+    return vb_name_eq(seg, "Object") ? NULL : seg;
+}
+
+/* Type written on a declaration: its `As` clause, a Catch's type, or the type
+ * of a `New T(...)` initializer (`Dim o = New T()`). */
+static const char *vb_decl_type(CBMArena *a, TSNode decl, const char *source) {
+    TSNode t = ts_node_child_by_field_name(decl, TS_FIELD("type"));
+    if (!ts_node_is_null(t)) {
+        return vb_type_name(a, t, source);
+    }
+    uint32_t n = ts_node_named_child_count(decl);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode c = ts_node_named_child(decl, i);
+        if (strcmp(ts_node_type(c), "as_clause") == 0) {
+            return vb_type_name(a, ts_node_child_by_field_name(c, TS_FIELD("type")), source);
+        }
+    }
+    TSNode init = ts_node_child_by_field_name(decl, TS_FIELD("initializer"));
+    if (ts_node_is_null(init)) {
+        init = ts_node_child_by_field_name(decl, TS_FIELD("value"));
+    }
+    init = vb_unwrap(init);
+    if (!ts_node_is_null(init) && strcmp(ts_node_type(init), "new_expression") == 0) {
+        return vb_type_name(a, ts_node_child_by_field_name(init, TS_FIELD("type")), source);
+    }
+    return NULL;
+}
+
+static void vb_add_decl(CBMArena *a, WalkState *state, int *cap, TSNode name, const char *type,
+                        uint8_t rank, const char *source) {
+    if (ts_node_is_null(name)) {
+        return;
+    }
+    if (state->vb_decl_count == *cap) {
+        int grown = *cap ? *cap * 2 : VB_DECL_INIT_CAP;
+        struct CBMVbDecl *next =
+            (struct CBMVbDecl *)cbm_arena_alloc(a, (size_t)grown * sizeof(struct CBMVbDecl));
+        if (!next) {
+            return;
+        }
+        if (state->vb_decl_count > 0) {
+            memcpy(next, state->vb_decls, (size_t)state->vb_decl_count * sizeof(struct CBMVbDecl));
+        }
+        state->vb_decls = next;
+        *cap = grown;
+    }
+    struct CBMVbDecl *d = &state->vb_decls[state->vb_decl_count];
+    d->name = cbm_node_text(a, name, source);
+    d->type = type;
+    d->pos = ts_node_start_byte(name);
+    d->rank = rank;
+    if (d->name) {
+        state->vb_decl_count++;
+    }
+}
+
+/* `Dim a, b As T, c As U`: the names before an As clause take its type. */
+static void vb_add_dim(CBMArena *a, WalkState *state, int *cap, TSNode dim, const char *source) {
+    TSNode pending[CBM_SZ_16];
+    int np = 0;
+    uint32_t n = ts_node_child_count(dim);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode c = ts_node_child(dim, i);
+        const char *field = ts_node_field_name_for_child(dim, i);
+        if (field && strcmp(field, "name") == 0 && np < CBM_SZ_16) {
+            pending[np++] = c;
+        } else if (strcmp(ts_node_type(c), "as_clause") == 0) {
+            const char *t =
+                vb_type_name(a, ts_node_child_by_field_name(c, TS_FIELD("type")), source);
+            for (int k = 0; k < np; k++) {
+                vb_add_decl(a, state, cap, pending[k], t, VB_DECL_LOCAL, source);
+            }
+            np = 0;
+        }
+    }
+    const char *init_type = np == SKIP_ONE ? vb_decl_type(a, dim, source) : NULL;
+    for (int k = 0; k < np; k++) {
+        vb_add_decl(a, state, cap, pending[k], init_type, VB_DECL_LOCAL, source);
+    }
+}
+
+/* One node of the method being scanned. */
+static void vb_collect_decl(CBMArena *a, WalkState *state, int *cap, TSNode n, const char *source) {
+    const char *k = ts_node_type(n);
+    if (strcmp(k, "dim_statement") == 0) {
+        vb_add_dim(a, state, cap, n, source);
+    } else if (strcmp(k, "variable_declarator") == 0) {
+        vb_add_decl(a, state, cap, ts_node_child_by_field_name(n, TS_FIELD("name")),
+                    vb_decl_type(a, n, source), VB_DECL_LOCAL, source);
+    } else if (strcmp(k, "parameter") == 0) {
+        vb_add_decl(a, state, cap, ts_node_child_by_field_name(n, TS_FIELD("name")),
+                    vb_decl_type(a, n, source), VB_DECL_PARAM, source);
+    } else if (strcmp(k, "for_each_statement") == 0) {
+        vb_add_decl(a, state, cap, ts_node_child_by_field_name(n, TS_FIELD("variable")),
+                    vb_decl_type(a, n, source), VB_DECL_LOCAL, source);
+    } else if (strcmp(k, "using_statement") == 0) {
+        vb_add_decl(a, state, cap, ts_node_child_by_field_name(n, TS_FIELD("resource")),
+                    vb_decl_type(a, n, source), VB_DECL_LOCAL, source);
+    } else if (strcmp(k, "catch_block") == 0) {
+        vb_add_decl(a, state, cap, ts_node_child_by_field_name(n, TS_FIELD("exception")),
+                    vb_decl_type(a, n, source), VB_DECL_LOCAL, source);
+    }
+}
+
+static bool vb_is_method_scope(const char *k) {
+    return strcmp(k, "method_declaration") == 0 || strcmp(k, "constructor_declaration") == 0 ||
+           strcmp(k, "operator_declaration") == 0 || strcmp(k, "property_declaration") == 0;
+}
+
+static bool vb_is_class_scope(const char *k) {
+    return strcmp(k, "class_block") == 0 || strcmp(k, "module_block") == 0 ||
+           strcmp(k, "structure_block") == 0;
+}
+
+/* Collect, once per method, the declarations a member call in it can see:
+ * everything declared inside the method, then the fields and properties of
+ * its class. The walk visits a method's calls in order, so one cached method
+ * covers them all. */
+static void vb_ensure_decls(CBMExtractCtx *ctx, WalkState *state, TSNode call) {
+    TSNode method = {0};
+    TSNode cls = {0};
+    for (TSNode p = ts_node_parent(call); !ts_node_is_null(p); p = ts_node_parent(p)) {
+        const char *k = ts_node_type(p);
+        if (ts_node_is_null(method) && vb_is_method_scope(k)) {
+            method = p;
+        } else if (vb_is_class_scope(k)) {
+            cls = p;
+            break;
+        }
+    }
+    TSNode scope = ts_node_is_null(method) ? cls : method;
+    if (ts_node_is_null(scope)) {
+        state->vb_decl_ready = false;
+        return;
+    }
+    uint32_t start = ts_node_start_byte(scope);
+    uint32_t end = ts_node_end_byte(scope);
+    if (state->vb_decl_ready && state->vb_decl_scope_start == start &&
+        state->vb_decl_scope_end == end) {
+        return;
+    }
+    CBMArena *a = ctx->arena;
+    int cap = 0;
+    state->vb_decls = NULL;
+    state->vb_decl_count = 0;
+    if (!ts_node_is_null(method)) {
+        TSTreeCursor cur = ts_tree_cursor_new(method);
+        bool more = true;
+        while (more) {
+            vb_collect_decl(a, state, &cap, ts_tree_cursor_current_node(&cur), ctx->source);
+            if (ts_tree_cursor_goto_first_child(&cur)) {
+                continue;
+            }
+            while (!ts_tree_cursor_goto_next_sibling(&cur)) {
+                if (!ts_tree_cursor_goto_parent(&cur)) {
+                    more = false;
+                    break;
+                }
+            }
+        }
+        ts_tree_cursor_delete(&cur);
+    }
+    if (!ts_node_is_null(cls)) {
+        uint32_t n = ts_node_named_child_count(cls);
+        for (uint32_t i = 0; i < n; i++) {
+            TSNode m = ts_node_named_child(cls, i);
+            const char *k = ts_node_type(m);
+            if (strcmp(k, "field_declaration") == 0) {
+                uint32_t nv = ts_node_named_child_count(m);
+                for (uint32_t j = 0; j < nv; j++) {
+                    TSNode v = ts_node_named_child(m, j);
+                    if (strcmp(ts_node_type(v), "variable_declarator") == 0) {
+                        vb_add_decl(a, state, &cap,
+                                    ts_node_child_by_field_name(v, TS_FIELD("name")),
+                                    vb_decl_type(a, v, ctx->source), VB_DECL_FIELD, ctx->source);
+                    }
+                }
+            } else if (strcmp(k, "property_declaration") == 0) {
+                vb_add_decl(a, state, &cap, ts_node_child_by_field_name(m, TS_FIELD("name")),
+                            vb_decl_type(a, m, ctx->source), VB_DECL_FIELD, ctx->source);
+            }
+        }
+    }
+    state->vb_decl_scope_start = start;
+    state->vb_decl_scope_end = end;
+    state->vb_decl_ready = true;
+}
+
+/* The declaration `name` refers to at byte `at`: the closest preceding local,
+ * else a parameter, else a class field (only a field for `Me.name`). */
+static const struct CBMVbDecl *vb_find_decl(const WalkState *state, const char *name, uint32_t at,
+                                            bool fields_only) {
+    const struct CBMVbDecl *best = NULL;
+    for (int i = 0; i < state->vb_decl_count; i++) {
+        const struct CBMVbDecl *d = &state->vb_decls[i];
+        if (!vb_name_eq(d->name, name) || (fields_only && d->rank != VB_DECL_FIELD) ||
+            (d->rank == VB_DECL_LOCAL && d->pos > at)) {
+            continue;
+        }
+        if (!best || d->rank < best->rank || (d->rank == best->rank && d->pos > best->pos)) {
+            best = d;
+        }
+    }
+    return best;
+}
+
+static bool vb_is_self(const char *t) {
+    return vb_name_eq(t, "Me") || vb_name_eq(t, "MyClass") || vb_name_eq(t, "MyBase");
+}
+
+/* The simple receiver of a member call: `o` in o.M(), `o` in Me.o.M() (a
+ * field: *fields_only). A null node for anything else (calls, indexes, chains). */
+static TSNode vb_simple_receiver(CBMExtractCtx *ctx, TSNode obj, bool *fields_only) {
+    TSNode none = {0};
+    *fields_only = false;
+    obj = vb_unwrap(obj);
+    if (ts_node_is_null(obj)) {
+        return none;
+    }
+    const char *k = ts_node_type(obj);
+    if (strcmp(k, "identifier") == 0) {
+        char *t = cbm_node_text(ctx->arena, obj, ctx->source);
+        return t && !vb_is_self(t) ? obj : none;
+    }
+    if (strcmp(k, "member_access") == 0) {
+        TSNode inner = vb_unwrap(ts_node_child_by_field_name(obj, TS_FIELD("object")));
+        TSNode mem = ts_node_child_by_field_name(obj, TS_FIELD("member"));
+        char *it = ts_node_is_null(inner) ? NULL : cbm_node_text(ctx->arena, inner, ctx->source);
+        if (it && vb_is_self(it) && !ts_node_is_null(mem)) {
+            *fields_only = true;
+            return mem;
+        }
+    }
+    return none;
+}
+
+static const char *vb_receiver_callee(CBMExtractCtx *ctx, TSNode node, WalkState *state,
+                                      const char *name) {
+    if (ctx->language != CBM_LANG_VBNET || !name || strcmp(ts_node_type(node), "invocation") != 0) {
+        return name;
+    }
+    TSNode target = ts_node_child_by_field_name(node, TS_FIELD("target"));
+    if (ts_node_is_null(target)) {
+        return name;
+    }
+    TSNode member = ts_node_child_by_field_name(target, TS_FIELD("member"));
+    TSNode recv = {0};
+    const char *direct_type = NULL;
+    bool fields_only = false;
+    const char *tk = ts_node_type(target);
+    if (strcmp(tk, "member_access") == 0) {
+        TSNode obj = ts_node_child_by_field_name(target, TS_FIELD("object"));
+        if (ts_node_is_null(obj)) {
+            return name;
+        }
+        recv = vb_simple_receiver(ctx, obj, &fields_only);
+    } else if (strcmp(tk, "with_member_access") == 0) {
+        TSNode with = {0};
+        for (TSNode p = ts_node_parent(target); !ts_node_is_null(p); p = ts_node_parent(p)) {
+            if (strcmp(ts_node_type(p), "with_statement") == 0) {
+                with = p;
+                break;
+            }
+        }
+        TSNode wt = ts_node_is_null(with)
+                        ? with
+                        : vb_unwrap(ts_node_child_by_field_name(with, TS_FIELD("target")));
+        if (ts_node_is_null(wt)) {
+            return name;
+        }
+        if (strcmp(ts_node_type(wt), "new_expression") == 0) {
+            direct_type = vb_type_name(
+                ctx->arena, ts_node_child_by_field_name(wt, TS_FIELD("type")), ctx->source);
+            if (!direct_type) {
+                return name;
+            }
+        } else {
+            recv = vb_simple_receiver(ctx, wt, &fields_only);
+        }
+    } else {
+        return name;
+    }
+    char *m = ts_node_is_null(member) ? NULL : cbm_node_text(ctx->arena, member, ctx->source);
+    if (!m) {
+        return name;
+    }
+    if (direct_type) {
+        return cbm_arena_sprintf(ctx->arena, "%s%s.%s", CBM_VB_TYPED_PREFIX, direct_type, m);
+    }
+    if (ts_node_is_null(recv)) {
+        return name;
+    }
+    char *rn = cbm_node_text(ctx->arena, recv, ctx->source);
+    if (!rn) {
+        return name;
+    }
+    vb_ensure_decls(ctx, state, node);
+    const struct CBMVbDecl *d = state->vb_decl_ready
+                                    ? vb_find_decl(state, rn, ts_node_start_byte(node), fields_only)
+                                    : NULL;
+    if (d && d->type) {
+        return cbm_arena_sprintf(ctx->arena, "%s%s.%s", CBM_VB_TYPED_PREFIX, d->type, m);
+    }
+    if (d) {
+        return name; /* declared without a type: the plain callee, as before */
+    }
+    return cbm_arena_sprintf(ctx->arena, "%s%s.%s", CBM_VB_FREE_PREFIX, rn, m);
+}
+
 // Produce the textual callee and the AST occurrence from one operation. The
 // generic fallback retains the former field/terminal behavior, while grammars
 // whose extractor uses a sibling, a special field, or a synthetic literal are
@@ -4472,6 +4858,7 @@ static CBMPrimaryCalleeSelection select_primary_callee(CBMExtractCtx *ctx, TSNod
     selection.name = extract_callee_name(ctx->arena, node, ctx->source, ctx->language);
     selection.name = resolve_objectscript_callee(ctx, node, state, selection.name);
     selection.name = resolve_swift_delegating_init(ctx, state, selection.name);
+    selection.name = vb_receiver_callee(ctx, node, state, selection.name);
     if (!selection.name || !selection.name[0]) {
         return selection;
     }
