@@ -43,8 +43,8 @@ typedef struct {
     const char *text; /* WORD/VAR/TEMP: identifier text without brackets/quotes */
     int len;
     int line;
-    char ch;          /* PUNCT: the character */
-    bool line_start;  /* first token on its line (GO detection) */
+    char ch;         /* PUNCT: the character */
+    bool line_start; /* first token on its line (GO detection) */
 } tsql_tok;
 
 typedef struct {
@@ -223,16 +223,17 @@ static bool word_is(const tsql_tok *t, const char *kw) {
 /* Words that end a table reference, so they are never read as an alias. */
 static bool is_clause_word(const tsql_tok *t) {
     static const char *const kws[] = {
-        "WHERE",  "ON",      "JOIN",    "INNER",   "LEFT",     "RIGHT",    "FULL",    "OUTER",
-        "CROSS",  "GROUP",   "ORDER",   "HAVING",  "UNION",    "EXCEPT",   "INTERSECT", "SET",
-        "WITH",   "OPTION",  "FOR",     "INTO",    "VALUES",   "SELECT",   "FROM",    "AND",
-        "OR",     "WHEN",    "THEN",    "ELSE",    "END",      "BEGIN",    "IF",      "WHILE",
-        "RETURN", "DECLARE", "EXEC",    "EXECUTE", "INSERT",   "UPDATE",   "DELETE",  "MERGE",
-        "USING",  "OUTPUT",  "PIVOT",   "UNPIVOT", "APPLY",    "TABLESAMPLE", "AS",   "NOT",
-        "NULL",   "IS",      "IN",      "EXISTS",  "CASE",     "TOP",      "DISTINCT", "ALL",
-        "OFFSET", "FETCH",   "PRINT",   "RAISERROR", "THROW",  "COMMIT",   "ROLLBACK", "BREAK",
-        "CONTINUE", "GOTO",  "WAITFOR", "CLOSE",   "OPEN",     "DEALLOCATE", "TRUNCATE", "CREATE",
-        "ALTER",  "DROP",    "GO",      NULL};
+        "WHERE",     "ON",       "JOIN",   "INNER",       "LEFT",   "RIGHT",    "FULL",
+        "OUTER",     "CROSS",    "GROUP",  "ORDER",       "HAVING", "UNION",    "EXCEPT",
+        "INTERSECT", "SET",      "WITH",   "OPTION",      "FOR",    "INTO",     "VALUES",
+        "SELECT",    "FROM",     "AND",    "OR",          "WHEN",   "THEN",     "ELSE",
+        "END",       "BEGIN",    "IF",     "WHILE",       "RETURN", "DECLARE",  "EXEC",
+        "EXECUTE",   "INSERT",   "UPDATE", "DELETE",      "MERGE",  "USING",    "OUTPUT",
+        "PIVOT",     "UNPIVOT",  "APPLY",  "TABLESAMPLE", "AS",     "NOT",      "NULL",
+        "IS",        "IN",       "EXISTS", "CASE",        "TOP",    "DISTINCT", "ALL",
+        "OFFSET",    "FETCH",    "PRINT",  "RAISERROR",   "THROW",  "COMMIT",   "ROLLBACK",
+        "BREAK",     "CONTINUE", "GOTO",   "WAITFOR",     "CLOSE",  "OPEN",     "DEALLOCATE",
+        "TRUNCATE",  "CREATE",   "ALTER",  "DROP",        "GO",     NULL};
     if (!t || t->kind != TK_WORD) {
         return false;
     }
@@ -414,6 +415,10 @@ static void obj_finish(tsql_obj *o) {
         memset(&def, 0, sizeof(def));
         def.name = o->name;
         def.qualified_name = o->qn;
+        /* Class, not the grammar path's Table/View: the registry vetoes
+         * relation labels from the default resolve (lineage-only), and the
+         * rw records of this extractor resolve through it into READS /
+         * WRITES edges. sql_kind keeps TABLE / VIEW visible. */
         def.label = (o->kind == OBJ_TABLE || o->kind == OBJ_VIEW) ? "Class" : "Function";
         def.file_path = o->ctx->rel_path;
         def.start_line = (uint32_t)o->start_line;
@@ -633,15 +638,23 @@ bool cbm_tsql_looks_like(const char *source, int source_len) {
         return false;
     }
     lower_into(low, source, n);
-    static const char *const objects[] = {"create procedure", "create proc ", "create or alter proc",
-                                          "alter procedure",  "alter proc ",  "create function",
-                                          "create or alter function", "create view",
-                                          "create or alter view",     "create table",
-                                          "create trigger",           NULL};
-    static const char *const markers[] = {"[dbo]",        "dbo.",          "\ngo\r", "\ngo\n",
-                                          "set nocount",  "set ansi_nulls", "set quoted_identifier",
-                                          "nvarchar",     "@@",            "begin try",
-                                          "getdate()",    "identity(",     NULL};
+    static const char *const objects[] = {
+        "create procedure",     "create proc ",    "create or alter proc",     "alter procedure",
+        "alter proc ",          "create function", "create or alter function", "create view",
+        "create or alter view", "create table",    "create trigger",           NULL};
+    static const char *const markers[] = {"[dbo]",
+                                          "dbo.",
+                                          "\ngo\r",
+                                          "\ngo\n",
+                                          "set nocount",
+                                          "set ansi_nulls",
+                                          "set quoted_identifier",
+                                          "nvarchar",
+                                          "@@",
+                                          "begin try",
+                                          "getdate()",
+                                          "identity(",
+                                          NULL};
     bool object = false;
     bool marker = false;
     for (const char *const *k = objects; *k && !object; k++) {
