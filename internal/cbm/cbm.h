@@ -215,6 +215,7 @@ typedef enum {
                        // operations are Routes (openapi.c)
     CBM_LANG_DIAGRAM,  // diagram files (PlantUML, DOT, D2, draw.io, Excalidraw), read
                        // without a grammar (diagram.c)
+    CBM_LANG_VBNET,    // Visual Basic .NET (.vb): tree-sitter-vb-dotnet, repowise fork v0.3.0
     CBM_LANG_COUNT
 } CBMLanguage;
 

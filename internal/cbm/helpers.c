@@ -1206,6 +1206,10 @@ char *cbm_func_name_node_text(CBMArena *a, TSNode name_node, const char *source,
             return cbm_arena_strdup(a, "deinit");
         }
     }
+    /* VB.NET `Sub New`: cbm_resolve_func_name hands back the declaration itself. */
+    if (lang == CBM_LANG_VBNET && strcmp(ts_node_type(name_node), "constructor_declaration") == 0) {
+        return cbm_arena_strdup(a, "New");
+    }
 
     char *text = cbm_node_text(a, name_node, source);
     /* A C keyword is never a function name: the definition is an error-recovery

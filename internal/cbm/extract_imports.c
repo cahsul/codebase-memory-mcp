@@ -41,6 +41,7 @@ static void parse_generic_imports(CBMExtractCtx *ctx, const char *node_type);
 static void parse_wolfram_imports(CBMExtractCtx *ctx);
 static void parse_php_imports(CBMExtractCtx *ctx);
 static void parse_csharp_imports(CBMExtractCtx *ctx);
+static void parse_vbnet_imports(CBMExtractCtx *ctx);
 static void parse_spec_imports(CBMExtractCtx *ctx);
 static void parse_hare_imports(CBMExtractCtx *ctx);
 static void parse_pascal_imports(CBMExtractCtx *ctx);
@@ -2300,6 +2301,41 @@ static void parse_generic_imports(CBMExtractCtx *ctx, const char *node_type) {
     ts_tree_cursor_delete(&cursor);
 }
 
+// --- VB.NET imports ---
+// `Imports System.Data` / `Imports DB = System.Data` are imports_statement nodes,
+// direct children of source_file, with a `namespace` field (namespace_name) and
+// an optional `alias` field. The generic text fallback would keep "DB = ..." as
+// the path, so the fields are read here: the namespace is the module path and
+// the alias, when present, is the local name (else the namespace's last segment).
+static void parse_vbnet_imports(CBMExtractCtx *ctx) {
+    CBMArena *a = ctx->arena;
+    TSTreeCursor cursor = ts_tree_cursor_new(ctx->root);
+    if (!ts_tree_cursor_goto_first_child(&cursor)) {
+        ts_tree_cursor_delete(&cursor);
+        return;
+    }
+    do {
+        TSNode node = ts_tree_cursor_current_node(&cursor);
+        if (strcmp(ts_node_type(node), "imports_statement") != 0) {
+            continue;
+        }
+        TSNode ns = ts_node_child_by_field_name(node, TS_FIELD("namespace"));
+        if (ts_node_is_null(ns)) {
+            continue;
+        }
+        char *path = cbm_node_text(a, ns, ctx->source);
+        if (!path || !path[0]) {
+            continue;
+        }
+        TSNode alias = ts_node_child_by_field_name(node, TS_FIELD("alias"));
+        const char *local =
+            ts_node_is_null(alias) ? path_last(a, path) : cbm_node_text(a, alias, ctx->source);
+        CBMImport imp = {.local_name = local, .module_path = path};
+        cbm_imports_push(&ctx->result->imports, a, imp);
+    } while (ts_tree_cursor_goto_next_sibling(&cursor));
+    ts_tree_cursor_delete(&cursor);
+}
+
 // --- Kotlin imports ---
 // tree-sitter-kotlin nests imports: source_file -> import_list -> import_header*.
 // parse_generic_imports only scans the DIRECT children of root, and "import" is
@@ -4365,6 +4401,9 @@ void cbm_extract_imports(CBMExtractCtx *ctx) {
         break;
     case CBM_LANG_CSHARP:
         parse_csharp_imports(ctx);
+        break;
+    case CBM_LANG_VBNET:
+        parse_vbnet_imports(ctx);
         break;
     case CBM_LANG_RUST:
         parse_rust_imports(ctx);

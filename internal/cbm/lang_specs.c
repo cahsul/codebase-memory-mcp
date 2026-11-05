@@ -13,6 +13,7 @@ extern const TSLanguage *tree_sitter_rust(void);
 extern const TSLanguage *tree_sitter_java(void);
 extern const TSLanguage *tree_sitter_cpp(void);
 extern const TSLanguage *tree_sitter_c_sharp(void);
+extern const TSLanguage *tree_sitter_vb_dotnet(void);
 extern const TSLanguage *tree_sitter_php_only(void);
 extern const TSLanguage *tree_sitter_lua(void);
 extern const TSLanguage *tree_sitter_scala(void);
@@ -396,6 +397,34 @@ static const char *cs_assign_types[] = {"assignment_expression", "postfix_unary_
                                         "prefix_unary_expression", NULL};
 static const char *cs_throw_types[] = {"throw_statement", "throw_expression", NULL};
 static const char *cs_decorator_types[] = {"attribute", NULL};
+
+/* VB.NET (tree-sitter-vb-dotnet, repowise fork v0.3.0). Shapes mirror C#:
+ * `Sub`/`Function` are method_declaration, `Sub New` is constructor_declaration
+ * (no name field, named "New" in cbm_func_name_node_text). Properties are fields,
+ * as in C#. type_declaration only wraps the *_block nodes, so it is not listed
+ * (listing both would emit every class twice). Calls are `invocation` only:
+ * `Call Foo()` is a call_statement wrapping the same invocation node, so listing
+ * call_statement too would count each call twice. `Dim x As New T()` folds the
+ * constructor into the as_clause (no new_expression node); `x = New T()` keeps a
+ * new_expression, which is listed so it links to the class. */
+static const char *vb_func_types[] = {"method_declaration", "constructor_declaration",
+                                      "operator_declaration", "lambda_expression", NULL};
+static const char *vb_class_types[] = {"class_block",     "module_block", "structure_block",
+                                       "interface_block", "enum_block",   NULL};
+static const char *vb_field_types[] = {"field_declaration", "property_declaration",
+                                       "event_declaration", NULL};
+static const char *vb_module_types[] = {"source_file", NULL};
+static const char *vb_call_types[] = {"invocation", "new_expression", NULL};
+static const char *vb_import_types[] = {"imports_statement", NULL};
+static const char *vb_branch_types[] = {"if_statement",    "elseif_clause",      "select_case_statement",
+                                        "case_block",      "for_statement",      "for_each_statement",
+                                        "while_statement", "do_statement",       "try_statement",
+                                        "catch_block",     NULL};
+static const char *vb_var_types[] = {"field_declaration", "dim_statement", "const_declaration", NULL};
+static const char *vb_assign_types[] = {"assignment_statement", "compound_assignment_statement",
+                                        NULL};
+static const char *vb_throw_types[] = {"throw_statement", NULL};
+static const char *vb_decorator_types[] = {"attribute", NULL};
 
 // ==================== PHP ====================
 static const char *php_func_types[] = {"function_static_declaration", "anonymous_function",
@@ -2752,6 +2781,13 @@ static const CBMLangSpec lang_specs[CBM_LANG_COUNT] = {
                         plsql_module_types, plsql_call_types, empty_types, empty_types,
                         plsql_branch_types, empty_types, plsql_assign_types, plsql_throw_types,
                         NULL, empty_types, NULL, NULL, tree_sitter_plsql, NULL},
+
+    // CBM_LANG_VBNET — Visual Basic .NET. repowise-dev/tree-sitter-vb-dotnet v0.3.0 (MIT).
+    // Same environment API as C# (System.Environment), so it shares cs_env_funcs.
+    [CBM_LANG_VBNET] = {CBM_LANG_VBNET, vb_func_types, vb_class_types, vb_field_types,
+                        vb_module_types, vb_call_types, vb_import_types, vb_import_types,
+                        vb_branch_types, vb_var_types, vb_assign_types, vb_throw_types, NULL,
+                        vb_decorator_types, cs_env_funcs, NULL, tree_sitter_vb_dotnet, NULL},
 
 };
 

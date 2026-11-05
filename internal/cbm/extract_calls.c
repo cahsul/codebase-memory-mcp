@@ -2314,6 +2314,45 @@ static char *extract_callee_name(CBMArena *a, TSNode node, const char *source, C
         }
     }
 
+    /* VB.NET resolves here and returns unconditionally: the generic field probe
+     * below looks for `function`/`name`/`method`, none of which VB has.
+     * - invocation keeps its callee in `target`: an identifier (`Foo(1)`), a
+     *   member_access (`objOM.AddRow(dr)`, emitted dotted like other member
+     *   calls) or a with_member_access (`.Refresh()` inside `With x`), whose
+     *   receiver is implicit, so only the member name is returned.
+     * - new_expression (`x = New SqlCommand(...)`) names the class through its
+     *   `type` field; VB writes generics as `List(Of T)`, so the text is cut at
+     *   the first '(' to leave the bare type the class resolution joins on.
+     * VB also uses parentheses for indexing (`dr("COL") = 1`), which parses as an
+     * invocation of `dr`; such callees match no definition and stay unresolved. */
+    if (lang == CBM_LANG_VBNET) {
+        const char *vk = ts_node_type(node);
+        if (strcmp(vk, "invocation") == 0) {
+            TSNode target = ts_node_child_by_field_name(node, TS_FIELD("target"));
+            if (ts_node_is_null(target)) {
+                return NULL;
+            }
+            if (strcmp(ts_node_type(target), "with_member_access") == 0) {
+                TSNode member = ts_node_child_by_field_name(target, TS_FIELD("member"));
+                return ts_node_is_null(member) ? NULL : cbm_node_text(a, member, source);
+            }
+            return cbm_node_text(a, target, source);
+        }
+        if (strcmp(vk, "new_expression") == 0) {
+            TSNode type = ts_node_child_by_field_name(node, TS_FIELD("type"));
+            if (ts_node_is_null(type)) {
+                return NULL;
+            }
+            char *tt = cbm_node_text(a, type, source);
+            char *paren = tt ? strchr(tt, '(') : NULL;
+            if (paren) {
+                *paren = '\0';
+            }
+            return tt;
+        }
+        return NULL;
+    }
+
     // Constructor / instantiation nodes (new T(), object_creation, instance_expression):
     // resolve to the constructed type so a CALLS edge links to the class/constructor.
     char *ctor = extract_constructor_callee(a, node, source, ts_node_type(node));

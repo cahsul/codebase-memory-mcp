@@ -808,6 +808,12 @@ TSNode cbm_resolve_func_name(TSNode node, CBMLanguage lang) {
             (strcmp(kind, "init_declaration") == 0 || strcmp(kind, "deinit_declaration") == 0)) {
             return node;
         }
+        /* VB.NET `Sub New(...)`: constructor_declaration has no name field, the
+         * keyword is the name. Same stand-in as Swift init; cbm_func_name_node_text
+         * maps the node kind to "New". */
+        if (lang == CBM_LANG_VBNET && strcmp(kind, "constructor_declaration") == 0) {
+            return node;
+        }
 
         TSNode name = func_name_node(node);
 
@@ -9054,6 +9060,12 @@ static TSNode find_class_body(TSNode class_node, CBMLanguage lang) {
     if (lang == CBM_LANG_SMALI) {
         return class_node;
     }
+    // VB.NET: class/module/structure/interface blocks have no body node. Members
+    // (method, constructor, property, field declarations) are direct children of
+    // the block, between the `Class X` header and `End Class`.
+    if (lang == CBM_LANG_VBNET) {
+        return class_node;
+    }
     // GraphQL: object/interface fields live in a fields_definition child.
     if (lang == CBM_LANG_GRAPHQL) {
         TSNode b = cbm_find_child_by_kind(class_node, "fields_definition");
@@ -9217,6 +9229,10 @@ static TSNode resolve_method_name(TSNode child, CBMLanguage lang) {
     // Swift init/deinit: named in one place, cbm_resolve_func_name (#2379).
     if (lang == CBM_LANG_SWIFT &&
         (strcmp(ck, "init_declaration") == 0 || strcmp(ck, "deinit_declaration") == 0)) {
+        return cbm_resolve_func_name(child, lang);
+    }
+    // VB.NET `Sub New`: same single naming point as above.
+    if (lang == CBM_LANG_VBNET && strcmp(ck, "constructor_declaration") == 0) {
         return cbm_resolve_func_name(child, lang);
     }
 
@@ -10298,6 +10314,30 @@ static const char *extract_java_field_name(CBMArena *a, TSNode field, const char
 
 /* ── Variable name extractors by language group ─────────────────── */
 
+/* VB.NET variable extraction. `Private x As Integer, y As String` is one
+ * field_declaration holding one variable_declarator per name (each with its own
+ * `name` field); `Dim x As ...` and `Const X = ...` carry `name` directly. */
+static void extract_vbnet_vars(CBMExtractCtx *ctx, TSNode node, CBMArena *a) {
+    if (strcmp(ts_node_type(node), "field_declaration") != 0) {
+        TSNode id = ts_node_child_by_field_name(node, TS_FIELD("name"));
+        if (!ts_node_is_null(id)) {
+            push_var_def(ctx, cbm_node_text(a, id, ctx->source), node);
+        }
+        return;
+    }
+    uint32_t n = ts_node_named_child_count(node);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode decl = ts_node_named_child(node, i);
+        if (strcmp(ts_node_type(decl), "variable_declarator") != 0) {
+            continue;
+        }
+        TSNode id = ts_node_child_by_field_name(decl, TS_FIELD("name"));
+        if (!ts_node_is_null(id)) {
+            push_var_def(ctx, cbm_node_text(a, id, ctx->source), node);
+        }
+    }
+}
+
 // C# variable extraction: handle field_declaration with nested variable_declaration.
 static void extract_csharp_vars(CBMExtractCtx *ctx, TSNode node, CBMArena *a) {
     const char *fname = extract_java_field_name(a, node, ctx->source);
@@ -10882,6 +10922,9 @@ static void extract_vars_mainstream(CBMExtractCtx *ctx, TSNode node, CBMArena *a
     }
     case CBM_LANG_CSHARP:
         extract_csharp_vars(ctx, node, a);
+        break;
+    case CBM_LANG_VBNET:
+        extract_vbnet_vars(ctx, node, a);
         break;
     case CBM_LANG_CPP:
     case CBM_LANG_C:

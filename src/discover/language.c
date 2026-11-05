@@ -64,6 +64,12 @@ static const ext_entry_t EXT_TABLE[] = {
      * markup lands in ERROR regions and is reported via parse_partial. */
     {".cshtml", CBM_LANG_CSHARP},
 
+    /* Visual Basic .NET. Code-behind (`Page.aspx.vb`) and designer files
+     * (`Page.aspx.designer.vb`, `DataSet.Designer.vb`) all end in `.vb`, so the
+     * last-dot lookup covers them without extra rows. VBScript (.vbs) and VBA
+     * are different languages and deliberately not mapped. */
+    {".vb", CBM_LANG_VBNET},
+
     /* Clojure */
     {".clj", CBM_LANG_CLOJURE},
     {".cljc", CBM_LANG_CLOJURE},
@@ -948,6 +954,7 @@ static const char *LANG_NAMES[CBM_LANG_COUNT] = {
     [CBM_LANG_OBJECTSCRIPT_EXPORT] = "ObjectScript Export XML",
     [CBM_LANG_ARKTS] = "ArkTS",
     [CBM_LANG_PLSQL] = "PL/SQL",
+    [CBM_LANG_VBNET] = "VB.NET",
 
 };
 
